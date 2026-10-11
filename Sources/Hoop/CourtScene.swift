@@ -55,11 +55,21 @@ enum BasketSize: String, CaseIterable {
     }
 }
 
+/// How a file went in, for the callout.
+struct MakeInfo {
+    /// From where the file was let go to the opening, in points.
+    let distance: CGFloat
+    /// Didn't touch the can on the way in.
+    let isClean: Bool
+    /// Dropped straight onto the Trash.
+    let isDunk: Bool
+}
+
 /// The whole screen is the court and the Trash is the basket. Thrown files fly with the momentum
 /// of the drag; into the Trash they go to the Trash, otherwise they stay where they land.
 final class CourtScene: SKScene, SKPhysicsContactDelegate {
     /// A file went in: trash it.
-    var onScore: ((URL) -> Void)?
+    var onScore: ((_ url: URL, _ make: MakeInfo) -> Void)?
     /// A file came to rest outside the Trash at this point. False for a file popping out after an undo.
     var onLand: ((_ url: URL, _ point: CGPoint, _ wasThrown: Bool) -> Void)?
     /// The player dragged the Trash somewhere new (the bottom of the can, in scene coordinates).
@@ -70,6 +80,8 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     var basketSize = BasketSize.medium {
         didSet { if basketSize != oldValue { resizeBasket() } }
     }
+    /// On a streak: files thrown from now on trail flames.
+    var isOnFire = false
 
     var fileNodes: [FileNode] { children.compactMap { $0 as? FileNode } }
 
@@ -88,8 +100,6 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         static let dash = "dash"
         static let home = "home"
     }
-
-    private static let cheers = ["Swish!", "Nothing but net", "Buckets!", "Splash!", "Count it!"]
 
     private let sounds: SoundEffects
     private var basket: BasketNode?
@@ -124,8 +134,6 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     }
 
     // MARK: Public
-
-    static func randomCheer() -> String { cheers.randomElement()! }
 
     /// Places the Trash with the bottom of the can at `home`; from the Dock it grows out of its tile.
     func mountBasket(home: CGPoint, dockTile: CGRect?, animated: Bool) {
@@ -170,12 +178,14 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
                 x: min(max(point.x + spread, FileNode.radius), size.width - FileNode.radius),
                 y: max(point.y + spread, FileNode.radius)
             )
+            file.releasePoint = file.position
             addChild(file)
             if dunk, let basket {
-                score(file, in: basket)
+                score(file, in: basket, isDunk: true)
             } else {
                 let damping = 1 - CGFloat(index) * 0.04
                 file.physicsBody?.velocity = CGVector(dx: velocity.dx * scale * damping, dy: velocity.dy * scale * damping)
+                if isOnFire { file.ignite() }
             }
         }
     }
@@ -195,7 +205,7 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     }
 
     func clear() {
-        fileNodes.forEach { $0.removeFromParent() }
+        for node in children where node is FileNode || node is FlameTrail { node.removeFromParent() }
         grabOffset = nil
     }
 
@@ -263,6 +273,7 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         let impulse = Float(contact.collisionImpulse)
         if categories & Physics.rim != 0, impulse > 0.05 {
             sounds.play(.clank, volume: min(1, impulse / 0.8))
+            (contact.bodyA.node as? FileNode ?? contact.bodyB.node as? FileNode)?.hitRim = true
         } else if categories & Physics.wall != 0, impulse > 0.15 {
             sounds.play(.thud, volume: min(0.9, impulse))
         }
@@ -270,12 +281,20 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
 
     // MARK: Scoring
 
-    private func score(_ file: FileNode, in basket: BasketNode) {
+    private func score(_ file: FileNode, in basket: BasketNode, isDunk: Bool = false) {
         file.isLeaving = true
         file.physicsBody = nil
         file.zPosition = Z.fileInside
+        file.extinguish()
+        let opening = CGPoint(x: basket.position.x, y: basket.position.y + basket.rimHeight)
+        let make = MakeInfo(
+            distance: hypot(opening.x - file.releasePoint.x, opening.y - file.releasePoint.y),
+            // The Dock-sized Trash has no rim to touch, so nothing it catches is clean.
+            isClean: basket.isSolid && !file.hitRim,
+            isDunk: isDunk
+        )
         // Trash it right away, so Finder's sound lands with the file.
-        onScore?(file.url)
+        onScore?(file.url, make)
 
         let target = CGPoint(x: basket.position.x, y: basket.position.y + basket.rimHeight * 0.45)
         let drop = SKAction.move(to: target, duration: 0.26)
@@ -292,6 +311,7 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     private func land(_ file: FileNode) {
         file.isLeaving = true
         file.physicsBody = nil
+        file.extinguish()
         onLand?(file.url, file.position, file.canScore)
         file.run(.sequence([.wait(forDuration: 0.15), .fadeOut(withDuration: 0.3), .removeFromParent()]))
     }

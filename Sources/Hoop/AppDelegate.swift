@@ -3,7 +3,7 @@ import Carbon.HIToolbox
 
 /// Menu bar app. ⌃⌥H (or the 🏀 menu) toggles shoot mode: the Dock's Trash grows into a basket
 /// and any file you drag gets thrown when you let go. Esc leaves shoot mode.
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     /// Where the basket lives: on the Dock's Trash tile, or wherever the player dragged it.
     private struct Spot {
         /// The bottom of the can, in screen coordinates.
@@ -18,6 +18,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private let trashCan = TrashCan()
     private let sounds = Sounds()
     private let toast = Toast()
+    private let scorekeeper = Scorekeeper()
     private var scene: CourtScene!
     private var overlay: OverlayWindow!
     private var statusItem: NSStatusItem!
@@ -58,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         scene = CourtScene(sounds: sounds)
         scene.mode = mode
         scene.basketSize = basketSize
-        scene.onScore = { [unowned self] url in trash(url) }
+        scene.onScore = { [unowned self] url, make in trash(url, make: make) }
         scene.onLand = { [unowned self] url, point, wasThrown in
             landed(url, at: overlay.screenPoint(fromScene: point), wasThrown: wasThrown)
         }
@@ -161,8 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     // MARK: Files
 
-    private func trash(_ url: URL) {
+    private func trash(_ url: URL, make: MakeInfo) {
         let name = url.lastPathComponent.middleTruncated(to: 28)
+        let bytes = Scorekeeper.size(of: url) // while it's still where it was
         trashCan.trash(url) { [weak self] result in
             guard let self else { return }
             Log.event("trash \(url.lastPathComponent): \(result)")
@@ -170,8 +172,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             case let .success(trashed):
                 // Finder plays its own trash sound; moving the file ourselves is silent.
                 if !trashed.byFinder { sounds.play(.trash) }
+                let callout = scorekeeper.recordMake(make, bytes: bytes)
+                scene.isOnFire = scorekeeper.isOnFire
                 let undo = trashed.undoable ? ToastAction(title: "Undo") { [weak self] in self?.undoShot(nil) } : nil
-                toast.show(ToastContent(title: CourtScene.randomCheer(), subtitle: "\(name) → Trash", action: undo), on: screen, for: 6)
+                let subtitle = ["\(name) → Trash", callout.note].compactMap { $0 }.joined(separator: " · ")
+                toast.show(ToastContent(title: callout.title, subtitle: subtitle, action: undo), on: screen, for: 6)
             case let .failure(error):
                 toast.show(ToastContent(title: "Couldn’t trash \(name)", subtitle: error.localizedDescription), on: screen, for: 4)
                 scene.respawn(url)
@@ -189,10 +194,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             Finder.moveDesktopIcon(of: url, to: CGPoint(x: min(max(point.x, area.minX), area.maxX), y: min(max(point.y, area.minY), area.maxY)))
         }
         guard wasThrown else { return }
+        let callout = scorekeeper.recordMiss()
+        scene.isOnFire = scorekeeper.isOnFire
         let name = url.lastPathComponent.middleTruncated(to: 28)
-        let message = mode == .impossible
+        var message = mode == .impossible
             ? ToastContent(title: Self.denials.randomElement()!, subtitle: "Impossible mode never lets one in")
             : ToastContent(title: "Brick!", subtitle: onDesktop ? "\(name) stays where it landed" : "\(name) stays in its folder")
+        if let callout { message.title = callout.title }
         toast.show(message, on: screen, for: 2)
     }
 
@@ -236,6 +244,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         menu.addItem(item("Put Trash Back on Dock", #selector(putTrashBack(_:))))
         menu.addItem(item("Undo", #selector(undoShot(_:))))
         menu.addItem(.separator())
+
+        let stats = NSMenu()
+        stats.delegate = self
+        menuNeedsUpdate(stats)
+        let statsItem = NSMenuItem(title: "Stats", action: nil, keyEquivalent: "")
+        statsItem.submenu = stats
+        menu.addItem(statsItem)
         menu.addItem(item("Sound Effects", #selector(toggleSound(_:))))
         menu.addItem(item("Allow Accessibility…", #selector(openAccessibilitySettings(_:))))
         menu.addItem(.separator())
@@ -276,6 +291,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
     }
 
+    /// Refills the Stats submenu with the latest numbers each time it opens.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let makes = scorekeeper.makes, misses = scorekeeper.misses
+        var shooting = "Makes \(makes) · Misses \(misses)"
+        if makes + misses > 0 { shooting += " · \(Int((Double(makes) * 100 / Double(makes + misses)).rounded()))%" }
+        let bytes = ByteCountFormatter()
+        bytes.allowsNonnumericFormatting = false
+        menu.removeAllItems()
+        // No action, so they show as plain disabled rows.
+        for row in [shooting, "Best streak \(scorekeeper.bestStreak)", "Trashed \(bytes.string(fromByteCount: Int64(scorekeeper.bytesTrashed)))"] {
+            menu.addItem(withTitle: row, action: nil, keyEquivalent: "")
+        }
+        menu.addItem(.separator())
+        menu.addItem(item("Reset Stats", #selector(resetStats(_:))))
+    }
+
     @objc private func chooseMode(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let mode = Mode(rawValue: raw) else { return }
         self.mode = mode
@@ -298,6 +329,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         spot = locateBasket()
         guard isShooting, let spot else { return }
         overlay.moveBasket(home: spot.home, dockTile: spot.dockTile, animated: true)
+    }
+
+    @objc private func resetStats(_ sender: Any?) {
+        scorekeeper.reset()
+        scene.isOnFire = false
     }
 
     @objc private func toggleSound(_ sender: Any?) {

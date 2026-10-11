@@ -13,8 +13,13 @@ final class FileNode: SKNode {
     var isLeaving = false
     var age: TimeInterval = 0
     var restingTime: TimeInterval = 0
+    /// Where it was let go, in scene coordinates.
+    var releasePoint = CGPoint.zero
+    /// Hit the can on the way.
+    var hitRim = false
 
     private let icon = SKSpriteNode()
+    private var flame: FlameTrail?
 
     init(url: URL) {
         self.url = url
@@ -56,6 +61,20 @@ final class FileNode: SKNode {
         let velocity = physicsBody?.velocity ?? .zero
         let tilt = max(-0.35, min(0.35, -velocity.dx / 1800))
         icon.zRotation += (tilt - icon.zRotation) * 0.25
+    }
+
+    /// Trails flames behind the file. Call once it's in the scene.
+    func ignite() {
+        guard flame == nil, let scene else { return }
+        let flame = FlameTrail(leavingIn: scene)
+        flame.zPosition = -1 // behind the icon
+        addChild(flame)
+        self.flame = flame
+    }
+
+    func extinguish() {
+        flame?.burnOut()
+        flame = nil
     }
 
     private func setIcon(_ image: CGImage?) {

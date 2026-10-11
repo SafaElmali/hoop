@@ -81,7 +81,7 @@ final class HoopNode: SKNode, Goal {
 
     /// Let go inside the rim or the top of the net.
     func isDunk(at point: CGPoint) -> Bool {
-        abs(point.x) < Shape.rim.width && point.y > -Shape.netHeight * 0.6 && point.y < FileNode.radius
+        abs(point.x) < Shape.rim.width && point.y > -Shape.netHeight * 0.6 && point.y < Throwable.radius
     }
 
     func covers(_ point: CGPoint) -> Bool {
@@ -89,13 +89,13 @@ final class HoopNode: SKNode, Goal {
         return Shape.board.insetBy(dx: -4, dy: -4).contains(point) || hoop.contains(point)
     }
 
-    /// The file drops through the net, which swishes.
-    func swallow(_ file: FileNode) {
+    /// It drops through the net, which swishes.
+    func swallow(_ thrown: Throwable) {
         let drop = SKAction.move(to: CGPoint(x: position.x, y: position.y - Shape.netHeight * 0.8), duration: 0.3)
         drop.timingMode = .easeIn
         let fade = SKAction.sequence([.wait(forDuration: 0.16), .fadeOut(withDuration: 0.14)])
-        file.run(.group([drop, .scale(to: 0.6, duration: 0.3), fade])) {
-            file.removeFromParent()
+        thrown.run(.group([drop, .scale(to: 0.6, duration: 0.3), fade])) {
+            thrown.removeFromParent()
         }
         swish()
     }

@@ -66,7 +66,7 @@ final class BasketNode: SKNode, Goal {
     private let back = SKSpriteNode()
     private let front = SKSpriteNode()
     private var backboard: Backboard?
-    private var catchMargin: CGFloat { isSolid ? 0 : FileNode.radius * 0.8 }
+    private var catchMargin: CGFloat { isSolid ? 0 : Throwable.radius * 0.8 }
 
     /// Where the bottom of the can sits for the Trash in a Dock tile: the icon is the tile's top
     /// square, and its artwork ends a little above the icon's bottom edge.
@@ -137,16 +137,17 @@ final class BasketNode: SKNode, Goal {
         isInside(point)
     }
 
-    /// The file shrinks down into the can, which gives a little squash and shows it's full.
-    func swallow(_ file: FileNode) {
+    /// It shrinks down into the can, which gives a little squash, and a file shows it's full.
+    /// A paper ball leaves the real Trash looking as it is.
+    func swallow(_ thrown: Throwable) {
         let target = CGPoint(x: position.x, y: position.y + rimHeight * 0.45)
         let drop = SKAction.move(to: target, duration: 0.26)
         drop.timingMode = .easeIn
         let fade = SKAction.sequence([.wait(forDuration: 0.14), .fadeOut(withDuration: 0.12)])
-        file.run(.group([drop, .scale(to: isSolid ? 0.55 : 0.3, duration: 0.26), fade])) { [weak self] in
-            file.removeFromParent()
+        thrown.run(.group([drop, .scale(to: isSolid ? 0.55 : 0.3, duration: 0.26), fade])) { [weak self] in
+            thrown.removeFromParent()
             self?.bump()
-            self?.isFull = true
+            if thrown is FileNode { self?.isFull = true }
         }
     }
 

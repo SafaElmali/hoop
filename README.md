@@ -20,6 +20,7 @@ A tiny macOS menu bar app that turns your Trash into a basketball hoop. Drag a f
 
 ## Options (🏀 menu)
 
+- **Shot Clock**: 30 seconds to make as many as you can. A rack of paper balls shows up across from the Trash: grab one and flick it. They're only paper, so nothing gets trashed and Stats stay put; files you throw count too. Click it again to call the round off.
 - **Mode**: Normal · Moving (the Trash glides back and forth) · Impossible (it dodges every shot)
 - **Trash Size**: Small · Medium · Large · Huge · Dock Size (the real Trash in your Dock: its size, its spot)
 - **Backboard**: a glass backboard on the grown Trash, for bank shots

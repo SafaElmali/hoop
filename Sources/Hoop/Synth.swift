@@ -51,6 +51,56 @@ struct Synth {
         }, peak: 0.3)
     }
 
+    /// A pea whistle: a pure tone warbling as the pea rattles round, with breath behind it. One blast
+    /// per entry in `durations` (in seconds), a beat apart.
+    mutating func whistle(pitch: Double, durations: [Double], peak: Float) -> [Float] {
+        var breath = (lowpass: 0.0, band: 0.0)
+        var phase = 0.0
+        var samples: [Float] = []
+        for duration in durations {
+            if !samples.isEmpty { samples += [Float](repeating: 0, count: Int(rate * 0.07)) }
+            for i in 0..<Int(rate * duration) {
+                let t = Double(i) / rate
+                // The pea cuts the air about 30 times a second: the pitch wobbles and the tone flutters.
+                let warble = sin(2 * .pi * 31 * t)
+                phase += 2 * .pi * pitch * (1 + 0.02 * warble) / rate
+                let tone = (sin(phase) + 0.2 * sin(2 * phase)) * (0.8 + 0.2 * warble)
+                let air = Self.bandpass(&breath, noise(), cutoff: pitch, damping: 0.4, rate: rate)
+                let level = min(1, t / 0.012) * min(1, (duration - t) / 0.04)
+                samples.append(Float((tone + 0.35 * air) * level))
+            }
+        }
+        return Self.normalized(samples, peak: peak)
+    }
+
+    /// A clock's tick: a short, woody knock.
+    mutating func tick(pitch: Double) -> [Float] {
+        Self.normalized((0..<Int(rate * 0.05)).map { i in
+            let t = Double(i) / rate
+            let knock = sin(2 * .pi * pitch * t) * exp(-t / 0.007) + 0.5 * sin(2 * .pi * pitch * 2.76 * t) * exp(-t / 0.003)
+            let strike = t < 0.0015 ? 0.4 * noise() : 0
+            return Float(knock * (1 - exp(-t / 0.0005)) + strike)
+        }, peak: 0.22)
+    }
+
+    /// A buzzer: detuned saws through a lowpass (`brightness`, 0…1, is how much of the buzz gets
+    /// through), driven (`drive`) into a growl.
+    func buzzer(pitches: [Double], duration: Double, brightness: Double, drive: Double, peak: Float) -> [Float] {
+        var phases = [Double](repeating: 0, count: pitches.count)
+        var tone = 0.0
+        return Self.normalized((0..<Int(rate * duration)).map { i in
+            let t = Double(i) / rate
+            var saw = 0.0
+            for index in pitches.indices {
+                phases[index] = (phases[index] + pitches[index] / rate).truncatingRemainder(dividingBy: 1)
+                saw += 2 * phases[index] - 1
+            }
+            tone += brightness * (saw - tone)
+            let level = min(1, t / 0.01) * min(1, (duration - t) / 0.08)
+            return Float(tanh(tone * drive) * level)
+        }, peak: peak)
+    }
+
     // MARK: Arcade
 
     /// A pulse wave gliding from `from` to `to` Hz and fading in 8-bit volume steps:
@@ -104,6 +154,23 @@ struct Synth {
         return Self.normalized(samples, peak: 0.22)
     }
 
+    /// A referee's whistle on a sound chip: a pulse wave trilling between two pitches, in two blasts.
+    func chipWhistle() -> [Float] {
+        var phase = 0.0
+        var samples: [Float] = []
+        for duration in [0.08, 0.28] {
+            if !samples.isEmpty { samples += [Float](repeating: 0, count: Int(rate * 0.06)) }
+            let count = Int(rate * duration)
+            for i in 0..<count {
+                // Flipping pitch 60 times a second, the way chip music fakes a trill.
+                let pitch = Int(Double(i) / rate * 60).isMultiple(of: 2) ? 1_976.0 : 2_093.0
+                phase = (phase + pitch / rate).truncatingRemainder(dividingBy: 1)
+                samples.append(Float(Self.pulse(phase, duty: 0.5) * Self.stepped(1 - 0.6 * Double(i) / Double(count))))
+            }
+        }
+        return Self.normalized(samples, peak: 0.18)
+    }
+
     // MARK: Stadium
 
     /// An arena-sized whoosh: a low and a high whoosh together, echoing round the room.
@@ -152,6 +219,21 @@ struct Synth {
     mutating func hornAndCrowd() -> [Float] {
         let mix = Self.layered([(airHorn(), 0.55), (crowd(), 0.9)])
         return Self.normalized(arena(mix, wet: 0.25), peak: 0.5)
+    }
+
+    /// A referee's whistle, two blasts, ringing round the arena.
+    mutating func refereeWhistle() -> [Float] {
+        Self.normalized(arena(whistle(pitch: 2_900, durations: [0.12, 0.5], peak: 1), wet: 0.3), peak: 0.4)
+    }
+
+    /// The scoreboard counting down: a short electric beep, echoing round the arena.
+    func scoreboardBeep() -> [Float] {
+        Self.normalized(arena(buzzer(pitches: [1_046, 1_049], duration: 0.1, brightness: 0.35, drive: 1.5, peak: 1), wet: 0.3), peak: 0.3)
+    }
+
+    /// The end-of-period horn: a harsh, slightly sour buzz that fills the arena.
+    func arenaHorn() -> [Float] {
+        Self.normalized(arena(buzzer(pitches: [233, 234.4, 277], duration: 1.2, brightness: 0.3, drive: 2.5, peak: 1), wet: 0.25), peak: 0.45)
     }
 
     /// A buzzy F major chord, two slightly detuned saws per note, scooping up to pitch and

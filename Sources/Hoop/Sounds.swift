@@ -12,7 +12,8 @@ extension SoundEffects {
 }
 
 /// Plays the chosen sound pack: macOS's own "move to trash" crumple when a file goes in, plus
-/// synthesised whooshes, clanks, landings and, in some packs, a cheer for a make.
+/// synthesised whooshes, clanks, landings, the Shot Clock's whistle, ticks and buzzer and, in some
+/// packs, a cheer for a make.
 final class Sounds: SoundEffects {
     enum Effect: CaseIterable {
         /// A file goes into the Trash.
@@ -27,6 +28,12 @@ final class Sounds: SoundEffects {
         case thud
         /// A make, once the file is in the Trash or its folder. Classic leaves it to Finder's own trash sound.
         case make
+        /// The Shot Clock starts.
+        case whistle
+        /// Each of the Shot Clock's last five seconds.
+        case tick
+        /// The Shot Clock runs out.
+        case buzzer
     }
 
     /// The pack picked in the menu. Before packs there was only a Sound Effects switch; off stays off.

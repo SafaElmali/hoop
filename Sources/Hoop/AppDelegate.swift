@@ -2,7 +2,8 @@ import AppKit
 import Carbon.HIToolbox
 
 /// Menu bar app. ⌃⌥H (or the 🏀 menu) toggles shoot mode: the Dock's Trash grows into a basket
-/// and any file you drag gets thrown when you let go. Esc leaves shoot mode.
+/// and any file you drag gets thrown when you let go. Esc leaves shoot mode. 🏀 → Shot Clock starts
+/// a 30-second round with paper balls to throw.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     /// Where the basket lives: on the Dock's Trash tile, or wherever the player dragged it.
     private struct Spot {
@@ -27,6 +28,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private var escapeKey: HotKey?
     private var dockWatcher: Timer?
     private var spot: Spot?
+    /// The Shot Clock round under way, if any.
+    private var shotClock: ShotClock?
 
     /// Recording lets go of the current shortcut, so typing it records it instead of toggling shoot
     /// mode; shoot mode stops too, so Esc cancels the recording instead of leaving shoot mode.
@@ -99,6 +102,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         scene.onLand = { [unowned self] url, point, wasThrown in
             landed(url, at: overlay.screenPoint(fromScene: point), wasThrown: wasThrown)
         }
+        scene.onPracticeScore = { [unowned self] make in practiceMade(make) }
+        scene.onPracticeMiss = { [unowned self] in practiceMissed() }
         scene.onBasketMoved = { [unowned self] point in
             savedHome = overlay.screenPoint(fromScene: point)
             spot = locateBasket(on: screen)
@@ -144,12 +149,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private func stopShooting() {
         escapeKey = nil
         dockWatcher?.invalidate()
+        // A Shot Clock round ends with shoot mode; hiding the overlay clears away its paper balls.
+        shotClock?.cancel()
+        shotClock = nil
         overlay.hide()
         statusItem.button?.contentTintColor = nil
         toast.clearResting()
     }
 
+    /// The toast shoot mode rests on: the clock during a Shot Clock round, else a hint for the mode.
     private func showHint() {
+        if let shotClock { return toast.rest(shotClock.hud, on: screen) }
         let hint: String
         if spot?.dockTile != nil, !DockTrash.isTrusted {
             hint = "Allow Accessibility in the 🏀 menu so Hoop can find your Trash"
@@ -224,6 +234,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         overlay.mountHoop(folder: hoopFolder, rimCenter: center, animated: true)
     }
 
+    // MARK: Shot Clock
+
+    /// Starts a round, turning shoot mode on first if it's off, or calls off the round under way.
+    @objc func toggleShotClock(_ sender: Any?) {
+        shotClock == nil ? startShotClock() : callOffShotClock()
+    }
+
+    /// A whistle, a rack of paper balls across from the Trash, and the clock running.
+    private func startShotClock() {
+        if !isShooting { startShooting() }
+        let clock = ShotClock { [unowned self] clock in clockTicked(clock) }
+        shotClock = clock
+        mountRack()
+        sounds.play(.whistle)
+        showHint()
+        clock.start()
+    }
+
+    /// Ends the round before the buzzer, with no result; shoot mode carries on.
+    private func callOffShotClock() {
+        shotClock?.cancel()
+        shotClock = nil
+        scene.clearPractice()
+        showHint()
+    }
+
+    /// The last five seconds tick. At zero: the buzzer, the balls cleared away, and the result over
+    /// shoot mode's usual hint.
+    private func clockTicked(_ clock: ShotClock) {
+        guard clock.isOver else {
+            if clock.secondsLeft <= 5 { sounds.play(.tick) }
+            return updateClock()
+        }
+        sounds.play(.buzzer)
+        shotClock = nil
+        scene.clearPractice()
+        showHint()
+        toast.show(clock.result, on: screen, for: 5)
+    }
+
+    /// Puts the clock and score in the resting toast, without cutting a callout short.
+    private func updateClock() {
+        guard let shotClock else { return }
+        toast.updateResting(shotClock.hud, on: screen)
+    }
+
+    /// Stands the paper ball rack at the bottom of the screen, on the side away from the Trash.
+    private func mountRack() {
+        let area = screen.visibleFrame
+        let isTrashOnRight = (spot?.home.x ?? area.maxX) > area.midX
+        overlay.mountRack(center: CGPoint(x: isTrashOnRight ? area.minX + 150 : area.maxX - 150, y: area.minY + 12))
+    }
+
+    /// A paper ball went in: it counts for the round and the streak, but stays out of Stats.
+    private func practiceMade(_ make: MakeInfo) {
+        let callout = scorekeeper.recordMake(make, bytes: 0, isPractice: true)
+        scene.isOnFire = scorekeeper.isOnFire
+        shotClock?.recordMake()
+        // Paper into the bin: the crumple a file makes going into the Trash.
+        if make.target == .trash { sounds.play(.trash) }
+        sounds.play(.make)
+        let made = shotClock.map { "\($0.made) made" }
+        toast.show(ToastContent(title: callout.title, subtitle: [made, callout.note].compactMap { $0 }.joined(separator: " · ")), on: screen, for: 2)
+        updateClock()
+    }
+
+    /// A paper ball missed: the streak ends, and only a fire going out is worth a word.
+    private func practiceMissed() {
+        let callout = scorekeeper.recordMiss(isPractice: true)
+        scene.isOnFire = scorekeeper.isOnFire
+        guard let callout, let shotClock else { return }
+        toast.show(ToastContent(title: callout.title, subtitle: "\(shotClock.made) made"), on: screen, for: 2)
+    }
+
     // MARK: Files
 
     private func trash(_ url: URL, make: MakeInfo) {
@@ -258,15 +342,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    /// Counts a make and shows its callout, "name → destination", with Undo when it can be undone.
-    /// `bytes` is how much it trashed.
+    /// Counts a make (for the Shot Clock round too, when one's on) and shows its callout,
+    /// "name → destination", with Undo when it can be undone. `bytes` is how much it trashed.
     private func celebrate(_ make: MakeInfo, of name: String, into destination: String, bytes: Int, undoable: Bool) {
         let callout = scorekeeper.recordMake(make, bytes: bytes)
         scene.isOnFire = scorekeeper.isOnFire
+        shotClock?.recordMake()
         sounds.play(.make)
         let undo = undoable ? ToastAction(title: "Undo") { [weak self] in self?.undoShot(nil) } : nil
         let subtitle = ["\(name) → \(destination)", callout.note].compactMap { $0 }.joined(separator: " · ")
         toast.show(ToastContent(title: callout.title, subtitle: subtitle, action: undo), on: screen, for: 6)
+        updateClock()
     }
 
     /// A file came to rest outside the goals. A desktop file's real icon moves to where it landed
@@ -309,6 +395,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let menu = NSMenu()
         // Its key equivalent shows the current shortcut; see validateMenuItem.
         menu.addItem(item("Shoot Mode", #selector(toggleShootMode(_:))))
+        menu.addItem(item("Shot Clock", #selector(toggleShotClock(_:))))
 
         let modes = NSMenu()
         for mode in Mode.allCases {
@@ -375,6 +462,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             let shortcut = Shortcut.saved
             menuItem.keyEquivalent = shortcut.keyEquivalent
             menuItem.keyEquivalentModifierMask = shortcut.modifierFlags
+            return true
+        case #selector(toggleShotClock(_:)):
+            menuItem.state = shotClock != nil ? .on : .off
             return true
         case #selector(chooseMode(_:)):
             menuItem.state = menuItem.representedObject as? String == mode.rawValue ? .on : .off

@@ -7,7 +7,8 @@ struct Callout {
     var note: String?
 }
 
-/// Keeps score: makes in a row this session, plus totals that last across launches.
+/// Keeps score: makes in a row this session, plus totals that last across launches. Shot Clock
+/// paper balls count toward the streak, but never the totals.
 final class Scorekeeper {
     private enum Rules {
         /// Makes in a row to catch fire.
@@ -46,12 +47,14 @@ final class Scorekeeper {
     }
 
     /// Counts a make and picks its callout: a dunk, then a streak, then a bank shot, then a three,
-    /// then a clean one. `bytes` is what it trashed (nothing, for a move into a folder).
-    func recordMake(_ make: MakeInfo, bytes: Int) -> Callout {
+    /// then a clean one. `bytes` is what it trashed (nothing, for a move into a folder or a paper ball).
+    func recordMake(_ make: MakeInfo, bytes: Int, isPractice: Bool = false) -> Callout {
         streak += 1
-        self[.makes] += 1
-        self[.bestStreak] = max(bestStreak, streak)
-        self[.bytesTrashed] += bytes
+        if !isPractice {
+            self[.makes] += 1
+            self[.bestStreak] = max(bestStreak, streak)
+            self[.bytesTrashed] += bytes
+        }
         if make.isDunk { return Callout(title: "Dunk!") }
         if streak == Rules.fireStreak { return Callout(title: "On fire 🔥", note: "\(streak) in a row") }
         if isOnFire { return Callout(title: "\(streak) in a row 🔥") }
@@ -62,10 +65,10 @@ final class Scorekeeper {
     }
 
     /// Counts a miss and ends the streak; there's only something to say when that puts out a fire.
-    func recordMiss() -> Callout? {
+    func recordMiss(isPractice: Bool = false) -> Callout? {
         let wasOnFire = isOnFire
         streak = 0
-        self[.misses] += 1
+        if !isPractice { self[.misses] += 1 }
         return wasOnFire ? Callout(title: "Fire’s out") : nil
     }
 

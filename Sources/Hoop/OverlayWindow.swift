@@ -3,8 +3,9 @@ import SpriteKit
 
 /// A see-through panel over the whole screen (and the Dock) where the game is drawn. It lets clicks
 /// through so the desktop keeps working, except over the Trash and the folder hoop (so they can be
-/// dragged) and while a file drag is in progress: then it becomes the drop target and turns the drag
-/// into a throw. Non-activating, so grabbing the Trash doesn't pull focus from the app you're in.
+/// dragged) and the Shot Clock's paper balls (so they can be thrown), and while a file drag is in
+/// progress: then it becomes the drop target and turns the drag into a throw. Non-activating, so
+/// grabbing the Trash doesn't pull focus from the app you're in.
 final class OverlayWindow: NSPanel {
     private(set) var isArmed = false
 
@@ -59,6 +60,11 @@ final class OverlayWindow: NSPanel {
         scene?.mountHoop(folder: folder, rimCenter: scenePoint(fromScreen: rimCenter), animated: animated)
     }
 
+    /// `center` is the middle of the Shot Clock rack's base, in screen coordinates.
+    func mountRack(center: CGPoint) {
+        scene?.mountRack(center: scenePoint(fromScreen: center))
+    }
+
     func screenPoint(fromScene point: CGPoint) -> CGPoint {
         CGPoint(x: point.x + frame.minX, y: point.y + frame.minY)
     }
@@ -92,9 +98,9 @@ final class OverlayWindow: NSPanel {
             isArmed = true
             ignoresMouseEvents = false
         } else if !isMouseDown, !isArmed {
-            // Take clicks only over the Trash and the folder hoop, so they can be dragged around.
-            let overGoal = scene?.isOverGoal(scenePoint(fromScreen: NSEvent.mouseLocation)) ?? false
-            if ignoresMouseEvents == overGoal { ignoresMouseEvents = !overGoal }
+            // Take clicks only over the goals and paper balls, so they can be dragged around and thrown.
+            let overGrabbable = scene?.canGrab(at: scenePoint(fromScreen: NSEvent.mouseLocation)) ?? false
+            if ignoresMouseEvents == overGrabbable { ignoresMouseEvents = !overGrabbable }
         }
     }
 
@@ -109,7 +115,7 @@ final class OverlayWindow: NSPanel {
 
 /// SpriteKit view that receives the dragged files and measures how fast they were moving.
 final class CourtView: SKView {
-    private var samples: [(point: CGPoint, time: TimeInterval)] = []
+    private var flick = Flick()
     private var overlay: OverlayWindow? { window as? OverlayWindow }
     private var court: CourtScene? { scene as? CourtScene }
 
@@ -134,7 +140,7 @@ final class CourtView: SKView {
             return []
         }
         Log.event("drag entered with \(fileURLs(in: sender).count) file(s)")
-        samples = []
+        flick.reset()
         record(sender)
         return operation(for: sender)
     }
@@ -148,13 +154,13 @@ final class CourtView: SKView {
         record(sender)
         let urls = fileURLs(in: sender)
         guard let court, !urls.isEmpty else { return false }
-        Log.event("drop at \(scenePoint(sender)), velocity \(flickVelocity())")
-        court.throwFiles(urls, at: scenePoint(sender), velocity: flickVelocity())
+        Log.event("drop at \(scenePoint(sender)), velocity \(flick.velocity)")
+        court.throwFiles(urls, at: scenePoint(sender), velocity: flick.velocity)
         return true
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
-        samples = []
+        flick.reset()
         overlay?.disarm()
     }
 
@@ -164,19 +170,7 @@ final class CourtView: SKView {
     }
 
     private func record(_ info: NSDraggingInfo) {
-        let time = ProcessInfo.processInfo.systemUptime
-        samples.append((scenePoint(info), time))
-        samples.removeAll { time - $0.time > 0.12 }
-    }
-
-    /// Average velocity over the last ~80 ms, so a drag that stopped before release just drops.
-    private func flickVelocity() -> CGVector {
-        guard let last = samples.last,
-              let first = samples.first(where: { last.time - $0.time < 0.08 }),
-              last.time - first.time > 0.005
-        else { return .zero }
-        let elapsed = last.time - first.time
-        return CGVector(dx: (last.point.x - first.point.x) / elapsed, dy: (last.point.y - first.point.y) / elapsed)
+        flick.record(scenePoint(info), at: ProcessInfo.processInfo.systemUptime)
     }
 
     private func scenePoint(_ info: NSDraggingInfo) -> CGPoint {

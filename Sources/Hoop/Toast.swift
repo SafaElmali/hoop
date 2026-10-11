@@ -37,6 +37,13 @@ final class Toast {
         isShowingResting = true
     }
 
+    /// Swaps in a new resting message without cutting a temporary one short: it shows now if the
+    /// resting message is up, else once the temporary one expires.
+    func updateResting(_ content: ToastContent, on screen: NSScreen) {
+        resting = content
+        if isShowingResting { present(content, on: screen) }
+    }
+
     /// Drops the resting message, hiding it if it's on screen (a temporary one plays out).
     func clearResting() {
         resting = nil

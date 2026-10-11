@@ -1,34 +1,17 @@
 import QuickLookThumbnailing
 import SpriteKit
 
-/// A thrown file: its icon and name, with a ball-like physics body.
-final class FileNode: SKNode {
-    static let radius: CGFloat = 24
+/// A thrown file: its icon and name.
+final class FileNode: Throwable {
     private static let iconSide: CGFloat = 50
 
     let url: URL
-    /// False for a file popping back out after an undo, so it can't drop straight back in.
-    var canScore = true
-    /// Scoring or landed; no longer part of the game.
-    var isLeaving = false
-    var age: TimeInterval = 0
-    var restingTime: TimeInterval = 0
-    /// Where it was let go, in scene coordinates.
-    var releasePoint = CGPoint.zero
-    /// Hit a rim on the way.
-    var hitRim = false
-    /// Hit the Trash's backboard on the way.
-    var hitBoard = false
-    /// Where its centre was last frame, in scene coordinates, to tell when it drops through a hoop.
-    var previousPosition: CGPoint?
 
     private let icon = SKSpriteNode()
-    private var flame: FlameTrail?
 
     init(url: URL) {
         self.url = url
         super.init()
-        zPosition = Z.file
 
         setIcon(Self.finderIcon(for: url))
         addChild(icon)
@@ -44,43 +27,17 @@ final class FileNode: SKNode {
             addChild(label)
         }
 
-        let body = SKPhysicsBody(circleOfRadius: Self.radius)
-        body.mass = 0.1
-        body.allowsRotation = false
-        body.restitution = 0.35
-        body.friction = 0.5
-        body.linearDamping = 0.1
-        // Thrown files move fast and the can's lips and the backboard are thin edges; without this a file can tunnel through.
-        body.usesPreciseCollisionDetection = true
-        body.categoryBitMask = Physics.file
-        body.collisionBitMask = Physics.wall | Physics.file | Physics.rim | Physics.board
-        body.contactTestBitMask = Physics.wall | Physics.rim | Physics.board
-        physicsBody = body
-
+        takeFlight()
         loadThumbnail()
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
     /// Tilts the icon with horizontal speed.
-    func updateLook() {
+    override func updateLook() {
         let velocity = physicsBody?.velocity ?? .zero
         let tilt = max(-0.35, min(0.35, -velocity.dx / 1800))
         icon.zRotation += (tilt - icon.zRotation) * 0.25
-    }
-
-    /// Trails flames behind the file. Call once it's in the scene.
-    func ignite() {
-        guard flame == nil, let scene else { return }
-        let flame = FlameTrail(leavingIn: scene)
-        flame.zPosition = -1 // behind the icon
-        addChild(flame)
-        self.flame = flame
-    }
-
-    func extinguish() {
-        flame?.burnOut()
-        flame = nil
     }
 
     private func setIcon(_ image: CGImage?) {

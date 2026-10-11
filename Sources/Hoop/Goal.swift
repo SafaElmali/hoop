@@ -8,8 +8,8 @@ enum Target: Equatable {
     case folder(URL)
 }
 
-/// Something files are thrown into: the Trash or the folder hoop. Points are relative to the
-/// node's position, which is in scene coordinates.
+/// Something files (and Shot Clock paper balls) are thrown into: the Trash or the folder hoop.
+/// Points are relative to the node's position, which is in scene coordinates.
 protocol Goal: SKNode {
     /// Where a file that goes in ends up.
     var target: Target { get }
@@ -26,6 +26,6 @@ protocol Goal: SKNode {
     func isDunk(at point: CGPoint) -> Bool
     /// Whether `point` is on the goal, for grabbing it.
     func covers(_ point: CGPoint) -> Bool
-    /// Plays a made file going in, then removes it from the scene.
-    func swallow(_ file: FileNode)
+    /// Plays a made file or ball going in, then removes it from the scene.
+    func swallow(_ thrown: Throwable)
 }

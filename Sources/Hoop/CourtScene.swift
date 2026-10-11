@@ -75,12 +75,18 @@ struct MakeInfo {
 
 /// The whole screen is the court, and the Trash (plus the folder hoop, when it's up) are the goals.
 /// Thrown files fly with the momentum of the drag; into a goal they go where it sends them,
-/// otherwise they stay where they land.
+/// otherwise they stay where they land. During a Shot Clock round, paper balls wait on a rack to be
+/// grabbed and flicked with the mouse; they fly the same way, but nothing real moves when they're in.
 final class CourtScene: SKScene, SKPhysicsContactDelegate {
     /// A file went in: trash it, or move it into the folder hoop's folder, as `make.target` says.
+    /// Only for real files; paper balls report to `onPracticeScore`.
     var onScore: ((_ url: URL, _ make: MakeInfo) -> Void)?
     /// A file came to rest outside the goals at this point. False for a file popping out after an undo.
     var onLand: ((_ url: URL, _ point: CGPoint, _ wasThrown: Bool) -> Void)?
+    /// A paper ball went in. There's no file behind it: it only counts, and the rack gets a fresh ball.
+    var onPracticeScore: ((_ make: MakeInfo) -> Void)?
+    /// A paper ball came to rest outside the goals; the rack gets a fresh ball.
+    var onPracticeMiss: (() -> Void)?
     /// The player dragged the Trash somewhere new (the bottom of the can, in scene coordinates).
     var onBasketMoved: ((CGPoint) -> Void)?
     /// The player dragged the folder hoop somewhere new (the middle of its rim, in scene coordinates).
@@ -98,7 +104,11 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     /// On a streak: files thrown from now on trail flames.
     var isOnFire = false
 
-    var fileNodes: [FileNode] { children.compactMap { $0 as? FileNode } }
+    /// The paper balls waiting on the Shot Clock rack, in scene coordinates; empty without a rack.
+    var rackedBallPositions: [CGPoint] {
+        guard let rack else { return [] }
+        return rack.balls.map { convert($0.position, from: rack) }
+    }
 
     private enum Tuning {
         static let maxThrowSpeed: CGFloat = 3200
@@ -125,6 +135,12 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     private var dockTile: CGRect?
     /// The goal being dragged, and the pointer's offset to its position.
     private var grab: (goal: Goal, offset: CGVector)?
+    /// The Shot Clock's rack of paper balls, during a round.
+    private var rack: PracticeRack?
+    /// The paper ball in the player's hand, and the pointer's offset to its centre.
+    private var held: (ball: PaperBall, offset: CGVector)?
+    /// How the held ball is moving, for its throw.
+    private var flick = Flick()
     private var movingPhase: CGFloat = 0
     private var now: TimeInterval = 0
     private var elapsed: TimeInterval = 0
@@ -134,6 +150,9 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         let goals: [Goal?] = [basket, hoop]
         return goals.compactMap { $0 }
     }
+
+    /// Thrown files and paper balls, including the one in the player's hand.
+    private var throwables: [Throwable] { children.compactMap { $0 as? Throwable } }
 
     init(sounds: SoundEffects) {
         self.sounds = sounds
@@ -187,42 +206,88 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         if animated { grow(hoop, from: 0.3) }
     }
 
-    /// Whether a goal that can be dragged is under `point`. The Dock-sized Trash stays in the Dock.
-    func isOverGoal(_ point: CGPoint) -> Bool {
-        draggableGoal(at: point) != nil
+    /// Whether something the player can pick up is under `point`: a goal that can be dragged (the
+    /// Dock-sized Trash stays in the Dock), or a paper ball on the rack.
+    func canGrab(at point: CGPoint) -> Bool {
+        draggableGoal(at: point) != nil || rackedBall(at: point) != nil
     }
 
     /// Launches dropped files from `point` with the drag's velocity. Dropping right on a goal is a dunk.
     func throwFiles(_ urls: [URL], at point: CGPoint, velocity: CGVector) {
-        var dunkedInto = goal(droppedOnAt: point)
-        if mode == .impossible, let basket, dunkedInto === basket {
-            dodge(awayFrom: point.x, basket: basket, instantly: true)
-            dunkedInto = nil
-        }
-        let speed = hypot(velocity.dx, velocity.dy)
-        let scale = speed > Tuning.maxThrowSpeed ? Tuning.maxThrowSpeed / speed : 1
-        if dunkedInto == nil {
-            let loudness = Float(min(1, max(0, (speed - 500) / 2200)))
-            if loudness > 0.05 { sounds.play(.whoosh, volume: loudness * 0.8) }
-        }
+        let (velocity, dunkedInto) = letGo(at: point, velocity: velocity)
         for (index, url) in urls.prefix(12).enumerated() {
             let file = FileNode(url: url)
             let spread = CGFloat(index) * 12
             file.position = CGPoint(
-                x: min(max(point.x + spread, FileNode.radius), size.width - FileNode.radius),
-                y: max(point.y + spread, FileNode.radius)
+                x: min(max(point.x + spread, Throwable.radius), size.width - Throwable.radius),
+                y: max(point.y + spread, Throwable.radius)
             )
-            file.releasePoint = file.position
-            file.previousPosition = file.position
             addChild(file)
-            if let dunkedInto {
-                score(file, in: dunkedInto, isDunk: true)
-            } else {
-                let damping = 1 - CGFloat(index) * 0.04
-                file.physicsBody?.velocity = CGVector(dx: velocity.dx * scale * damping, dy: velocity.dy * scale * damping)
-                if isOnFire { file.ignite() }
-            }
+            let damping = 1 - CGFloat(index) * 0.04
+            launch(file, velocity: CGVector(dx: velocity.dx * damping, dy: velocity.dy * damping), into: dunkedInto)
         }
+    }
+
+    /// Puts up the Shot Clock rack, full of paper balls, with the middle of its base at `center`.
+    func mountRack(center: CGPoint) {
+        rack?.removeFromParent()
+        let rack = PracticeRack()
+        rack.position = center
+        addChild(rack)
+        self.rack = rack
+        grow(rack, from: 0.3)
+    }
+
+    /// Takes down the rack along with every paper ball: waiting, in hand or in the air.
+    func clearPractice() {
+        held = nil
+        rack?.run(.sequence([.fadeOut(withDuration: 0.25), .removeFromParent()]))
+        rack = nil
+        for ball in throwables.compactMap({ $0 as? PaperBall }) where !ball.isLeaving {
+            ball.isLeaving = true
+            ball.physicsBody = nil
+            ball.extinguish()
+            ball.run(.sequence([.fadeOut(withDuration: 0.2), .removeFromParent()]))
+        }
+    }
+
+    // MARK: Throwing paper balls
+
+    /// Takes the paper ball under `point` off the rack, into the player's hand; false if there isn't
+    /// one. Points are in scene coordinates; `time` is in seconds on any steady clock, like `NSEvent.timestamp`.
+    @discardableResult
+    func pickUpBall(at point: CGPoint, time: TimeInterval) -> Bool {
+        guard held == nil, let rack, let ball = rackedBall(at: point) else { return false }
+        rack.take(ball)
+        ball.removeAllActions()
+        ball.setScale(1.08)
+        held = (ball, CGVector(dx: ball.position.x - point.x, dy: ball.position.y - point.y))
+        flick.reset()
+        flick.record(point, at: time)
+        return true
+    }
+
+    /// The ball in hand follows the pointer, staying on screen.
+    func dragBall(to point: CGPoint, time: TimeInterval) {
+        guard let held else { return }
+        flick.record(point, at: time)
+        let radius = Throwable.radius
+        held.ball.position = CGPoint(
+            x: min(max(point.x + held.offset.dx, radius), size.width - radius),
+            y: min(max(point.y + held.offset.dy, radius), size.height - radius)
+        )
+    }
+
+    /// Lets go of the ball in hand: it flies with how the pointer moved over the last ~80 ms, just
+    /// like a thrown file. Letting go right on a goal is a dunk.
+    func releaseBall(at point: CGPoint, time: TimeInterval) {
+        guard let ball = held?.ball else { return }
+        dragBall(to: point, time: time)
+        held = nil
+        ball.setScale(1)
+        ball.takeFlight()
+        let (velocity, dunkedInto) = letGo(at: ball.position, velocity: flick.velocity)
+        launch(ball, velocity: velocity, into: dunkedInto)
     }
 
     /// After an undo: the file pops back out of where it went (the Trash, or the folder hoop while
@@ -232,7 +297,7 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         let file = FileNode(url: url)
         file.canScore = false
         let opening = opening(of: goal)
-        file.position = CGPoint(x: opening.x, y: opening.y + FileNode.radius + 6)
+        file.position = CGPoint(x: opening.x, y: opening.y + Throwable.radius + 6)
         file.alpha = 0
         addChild(file)
         let direction: CGFloat = goal.position.x > size.width / 2 ? -1 : 1
@@ -242,14 +307,19 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     }
 
     func clear() {
-        for node in children where node is FileNode || node is FlameTrail { node.removeFromParent() }
+        for node in children where node is Throwable || node is FlameTrail { node.removeFromParent() }
+        rack?.removeFromParent()
+        rack = nil
+        held = nil
         grab = nil
     }
 
-    // MARK: Dragging the goals
+    // MARK: Dragging the goals and paper balls
 
     override func mouseDown(with event: NSEvent) {
         let point = event.location(in: self)
+        // Paper balls draw over the goals, so they get picked first.
+        if pickUpBall(at: point, time: event.timestamp) { return }
         guard let goal = draggableGoal(at: point) else { return }
         goal.removeAction(forKey: ActionKey.dash)
         goal.removeAction(forKey: ActionKey.home)
@@ -258,12 +328,14 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let grab else { return }
         let point = event.location(in: self)
+        if held != nil { return dragBall(to: point, time: event.timestamp) }
+        guard let grab else { return }
         grab.goal.position = clamped(CGPoint(x: point.x + grab.offset.dx, y: point.y + grab.offset.dy), for: grab.goal)
     }
 
     override func mouseUp(with event: NSEvent) {
+        if held != nil { return releaseBall(at: event.location(in: self), time: event.timestamp) }
         guard let goal = grab?.goal else { return }
         grab = nil
         goal.run(.scale(to: 1, duration: 0.15))
@@ -300,32 +372,32 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
            let incoming = incomingDrop(into: basket) {
             dodge(awayFrom: incoming, basket: basket)
         }
-        for file in fileNodes where !file.isLeaving {
-            let velocity = file.physicsBody?.velocity ?? .zero
-            if file.canScore, let goal = goal(takingIn: file) {
-                score(file, in: goal)
+        for thrown in throwables where thrown.isInPlay {
+            let velocity = thrown.physicsBody?.velocity ?? .zero
+            if thrown.canScore, let goal = goal(takingIn: thrown) {
+                score(thrown, in: goal)
                 continue
             }
-            file.previousPosition = file.position
-            file.age += elapsed
-            file.restingTime = hypot(velocity.dx, velocity.dy) < 40 ? file.restingTime + elapsed : 0
-            if file.restingTime > Tuning.restBeforeLanding || file.age > Tuning.maxFlightTime {
-                land(file)
+            thrown.previousPosition = thrown.position
+            thrown.age += elapsed
+            thrown.restingTime = hypot(velocity.dx, velocity.dy) < 40 ? thrown.restingTime + elapsed : 0
+            if thrown.restingTime > Tuning.restBeforeLanding || thrown.age > Tuning.maxFlightTime {
+                land(thrown)
             }
         }
-        fileNodes.forEach { $0.updateLook() }
+        throwables.forEach { $0.updateLook() }
     }
 
     func didBegin(_ contact: SKPhysicsContact) {
         let categories = contact.bodyA.categoryBitMask | contact.bodyB.categoryBitMask
         let impulse = Float(contact.collisionImpulse)
-        let file = contact.bodyA.node as? FileNode ?? contact.bodyB.node as? FileNode
+        let thrown = contact.bodyA.node as? Throwable ?? contact.bodyB.node as? Throwable
         if categories & Physics.rim != 0, impulse > 0.05 {
             sounds.play(.clank, volume: min(1, impulse / 0.8))
-            file?.hitRim = true
+            thrown?.hitRim = true
         } else if categories & Physics.board != 0, impulse > 0.05 {
             sounds.play(.thud, volume: min(0.9, impulse))
-            file?.hitBoard = true
+            thrown?.hitBoard = true
         } else if categories & Physics.wall != 0, impulse > 0.15 {
             sounds.play(.thud, volume: min(0.9, impulse))
         }
@@ -333,37 +405,75 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
 
     // MARK: Scoring
 
-    private func score(_ file: FileNode, in goal: Goal, isDunk: Bool = false) {
-        file.isLeaving = true
-        file.physicsBody = nil
-        file.zPosition = Z.fileInside
-        file.extinguish()
+    /// What letting go at `point` does: drops straight into a goal for a dunk (Impossible mode's Trash
+    /// dodges it), or throws at `velocity`, capped at the fastest throw, with a whoosh for a fast one.
+    private func letGo(at point: CGPoint, velocity: CGVector) -> (velocity: CGVector, dunkedInto: Goal?) {
+        var dunkedInto = goal(droppedOnAt: point)
+        if mode == .impossible, let basket, dunkedInto === basket {
+            dodge(awayFrom: point.x, basket: basket, instantly: true)
+            dunkedInto = nil
+        }
+        let speed = hypot(velocity.dx, velocity.dy)
+        let scale = speed > Tuning.maxThrowSpeed ? Tuning.maxThrowSpeed / speed : 1
+        if dunkedInto == nil {
+            let loudness = Float(min(1, max(0, (speed - 500) / 2200)))
+            if loudness > 0.05 { sounds.play(.whoosh, volume: loudness * 0.8) }
+        }
+        return (CGVector(dx: velocity.dx * scale, dy: velocity.dy * scale), dunkedInto)
+    }
+
+    /// Sends a file or paper ball, already in the scene, on its way from where it is: into `goal`
+    /// for a dunk, else flying at `velocity`.
+    private func launch(_ thrown: Throwable, velocity: CGVector, into goal: Goal?) {
+        thrown.releasePoint = thrown.position
+        thrown.previousPosition = thrown.position
+        if let goal { return score(thrown, in: goal, isDunk: true) }
+        thrown.physicsBody?.velocity = velocity
+        if isOnFire { thrown.ignite() }
+    }
+
+    private func score(_ thrown: Throwable, in goal: Goal, isDunk: Bool = false) {
+        thrown.isLeaving = true
+        thrown.physicsBody = nil
+        thrown.zPosition = Z.fileInside
+        thrown.extinguish()
         let opening = opening(of: goal)
         let make = MakeInfo(
             target: goal.target,
-            distance: hypot(opening.x - file.releasePoint.x, opening.y - file.releasePoint.y),
-            isClean: goal.hasRim && !file.hitRim && !file.hitBoard,
+            distance: hypot(opening.x - thrown.releasePoint.x, opening.y - thrown.releasePoint.y),
+            isClean: goal.hasRim && !thrown.hitRim && !thrown.hitBoard,
             isDunk: isDunk,
-            isBank: file.hitBoard
+            isBank: thrown.hitBoard
         )
-        // Trash or move it right away, so Finder's trash sound lands with the file.
-        onScore?(file.url, make)
-        goal.swallow(file)
+        if let file = thrown as? FileNode {
+            // Trash or move it right away, so Finder's trash sound lands with the file.
+            onScore?(file.url, make)
+        } else {
+            onPracticeScore?(make)
+            rack?.refill()
+        }
+        goal.swallow(thrown)
     }
 
-    /// A miss: the file stays where it came to rest (for a desktop file, its real icon moves there).
-    private func land(_ file: FileNode) {
-        file.isLeaving = true
-        file.physicsBody = nil
-        file.extinguish()
-        onLand?(file.url, file.position, file.canScore)
-        file.run(.sequence([.wait(forDuration: 0.15), .fadeOut(withDuration: 0.3), .removeFromParent()]))
+    /// A miss: a file stays where it came to rest (for a desktop file, its real icon moves there);
+    /// a paper ball fades away the same, and the rack gets a fresh one.
+    private func land(_ thrown: Throwable) {
+        thrown.isLeaving = true
+        thrown.physicsBody = nil
+        thrown.extinguish()
+        if let file = thrown as? FileNode {
+            onLand?(file.url, file.position, file.canScore)
+        } else {
+            onPracticeMiss?()
+            rack?.refill()
+        }
+        thrown.run(.sequence([.wait(forDuration: 0.15), .fadeOut(withDuration: 0.3), .removeFromParent()]))
     }
 
-    /// The goal `file` went into this frame, if any.
-    private func goal(takingIn file: FileNode) -> Goal? {
-        let start = file.previousPosition ?? file.position
-        return goals.first { $0.takesIn(from: offset(of: start, from: $0), to: offset(of: file.position, from: $0)) }
+    /// The goal `thrown` went into this frame, if any.
+    private func goal(takingIn thrown: Throwable) -> Goal? {
+        let start = thrown.previousPosition ?? thrown.position
+        return goals.first { $0.takesIn(from: offset(of: start, from: $0), to: offset(of: thrown.position, from: $0)) }
     }
 
     /// The goal a file let go at `point` drops straight into: onto a goal, or onto the Trash tile in the Dock.
@@ -394,19 +504,19 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         movingPhase = asin(max(-1, min(1, (basket.position.x - trackCenter) / trackAmplitude)))
     }
 
-    /// Where a file will cross the height of the opening, if it's about to drop into the Trash.
+    /// Where a throw will cross the height of the opening, if it's about to drop into the Trash.
     private func incomingDrop(into basket: BasketNode) -> CGFloat? {
         let halfGravity = 0.5 * physicsWorld.gravity.dy * Tuning.pointsPerMetre
         let rimY = basket.position.y + basket.rimHeight
-        for file in fileNodes where file.canScore && !file.isLeaving {
-            guard let velocity = file.physicsBody?.velocity else { continue }
+        for thrown in throwables where thrown.canScore && thrown.isInPlay {
+            guard let velocity = thrown.physicsBody?.velocity else { continue }
             // Solve y(t) = rimY for the falling crossing: halfGravity·t² + vy·t + (y - rimY) = 0.
-            let discriminant = velocity.dy * velocity.dy - 4 * halfGravity * (file.position.y - rimY)
+            let discriminant = velocity.dy * velocity.dy - 4 * halfGravity * (thrown.position.y - rimY)
             guard discriminant >= 0 else { continue }
             let time = (-velocity.dy - discriminant.squareRoot()) / (2 * halfGravity)
             guard time >= 0, time < Tuning.dodgeLookahead else { continue }
-            let x = file.position.x + velocity.dx * time
-            if abs(x - basket.position.x) < basket.outerHalfWidth + FileNode.radius * 0.6 { return x }
+            let x = thrown.position.x + velocity.dx * time
+            if abs(x - basket.position.x) < basket.outerHalfWidth + Throwable.radius * 0.6 { return x }
         }
         return nil
     }
@@ -489,6 +599,11 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
 
     private func draggableGoal(at point: CGPoint) -> Goal? {
         goals.first { ($0 !== basket || basketSize != .dock) && $0.covers(offset(of: point, from: $0)) }
+    }
+
+    private func rackedBall(at point: CGPoint) -> PaperBall? {
+        guard let rack else { return nil }
+        return rack.ball(at: convert(point, to: rack))
     }
 
     /// The middle of a goal's opening, in scene coordinates.

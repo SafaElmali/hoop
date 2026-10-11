@@ -1,7 +1,7 @@
 import SpriteKit
 
-/// Flames streaming off a file thrown while on fire. They're left behind in `world`, so they
-/// trace the flight instead of following the file around.
+/// Flames streaming off a file (or paper ball) thrown while on fire. They're left behind in `world`,
+/// so they trace the flight instead of following the file around.
 final class FlameTrail: SKEmitterNode {
     private static let lifetime: CGFloat = 0.4
     private static let lifetimeRange: CGFloat = 0.15
@@ -25,7 +25,7 @@ final class FlameTrail: SKEmitterNode {
         particleBirthRate = 260
         particleLifetime = Self.lifetime
         particleLifetimeRange = Self.lifetimeRange
-        particlePositionRange = CGVector(dx: FileNode.radius * 0.75, dy: FileNode.radius * 0.75)
+        particlePositionRange = CGVector(dx: Throwable.radius * 0.75, dy: Throwable.radius * 0.75)
         particleSpeed = 30
         particleSpeedRange = 30
         emissionAngleRange = 2 * .pi

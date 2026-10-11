@@ -2,9 +2,9 @@ import AppKit
 import SpriteKit
 
 /// A see-through panel over the whole screen (and the Dock) where the game is drawn. It lets clicks
-/// through so the desktop keeps working, except over the Trash (so it can be dragged) and while a file
-/// drag is in progress: then it becomes the drop target and turns the drag into a throw.
-/// Non-activating, so grabbing the Trash doesn't pull focus from the app you're in.
+/// through so the desktop keeps working, except over the Trash and the folder hoop (so they can be
+/// dragged) and while a file drag is in progress: then it becomes the drop target and turns the drag
+/// into a throw. Non-activating, so grabbing the Trash doesn't pull focus from the app you're in.
 final class OverlayWindow: NSPanel {
     private(set) var isArmed = false
 
@@ -54,6 +54,11 @@ final class OverlayWindow: NSPanel {
         scene?.mountBasket(home: scenePoint(fromScreen: home), dockTile: dockTile.map(sceneRect(fromScreen:)), animated: animated)
     }
 
+    /// `rimCenter` is the middle of the folder hoop's rim, in screen coordinates; a nil `folder` takes the hoop down.
+    func mountHoop(folder: URL?, rimCenter: CGPoint, animated: Bool) {
+        scene?.mountHoop(folder: folder, rimCenter: scenePoint(fromScreen: rimCenter), animated: animated)
+    }
+
     func screenPoint(fromScene point: CGPoint) -> CGPoint {
         CGPoint(x: point.x + frame.minX, y: point.y + frame.minY)
     }
@@ -87,9 +92,9 @@ final class OverlayWindow: NSPanel {
             isArmed = true
             ignoresMouseEvents = false
         } else if !isMouseDown, !isArmed {
-            // Take clicks only over the Trash, so it can be dragged around.
-            let overBasket = scene?.isOverBasket(scenePoint(fromScreen: NSEvent.mouseLocation)) ?? false
-            if ignoresMouseEvents == overBasket { ignoresMouseEvents = !overBasket }
+            // Take clicks only over the Trash and the folder hoop, so they can be dragged around.
+            let overGoal = scene?.isOverGoal(scenePoint(fromScreen: NSEvent.mouseLocation)) ?? false
+            if ignoresMouseEvents == overGoal { ignoresMouseEvents = !overGoal }
         }
     }
 

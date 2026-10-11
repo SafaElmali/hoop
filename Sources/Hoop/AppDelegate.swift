@@ -19,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     private let sounds = Sounds()
     private let toast = Toast()
     private let scorekeeper = Scorekeeper()
+    private let folderHoopMenu = NSMenu()
     private var scene: CourtScene!
     private var overlay: OverlayWindow!
     private var statusItem: NSStatusItem!
@@ -57,26 +58,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
+    /// The glass backboard on the grown Trash.
+    private var hasBackboard: Bool {
+        get { UserDefaults.standard.bool(forKey: "backboard") }
+        set {
+            UserDefaults.standard.set(newValue, forKey: "backboard")
+            scene.hasBackboard = newValue
+        }
+    }
+
+    /// Where files thrown through the folder hoop go; nil when the hoop is off.
+    private var hoopFolder: URL? {
+        get { UserDefaults.standard.string(forKey: "hoopFolder").map { URL(fileURLWithPath: $0, isDirectory: true) } }
+        set { UserDefaults.standard.set(newValue?.path, forKey: "hoopFolder") }
+    }
+
     /// Where the player last dropped the basket (bottom of the can, screen coordinates).
     private var savedHome: CGPoint? {
-        get {
-            guard let xy = UserDefaults.standard.array(forKey: "basketHome") as? [Double], xy.count == 2 else { return nil }
-            return CGPoint(x: xy[0], y: xy[1])
-        }
-        set { UserDefaults.standard.set(newValue.map { [Double($0.x), Double($0.y)] }, forKey: "basketHome") }
+        get { UserDefaults.standard.point(forKey: "basketHome") }
+        set { UserDefaults.standard.setPoint(newValue, forKey: "basketHome") }
+    }
+
+    /// Where the player last dropped the folder hoop (middle of its rim, screen coordinates).
+    private var savedHoopCenter: CGPoint? {
+        get { UserDefaults.standard.point(forKey: "hoopHome") }
+        set { UserDefaults.standard.setPoint(newValue, forKey: "hoopHome") }
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         scene = CourtScene(sounds: sounds)
         scene.mode = mode
         scene.basketSize = basketSize
-        scene.onScore = { [unowned self] url, make in trash(url, make: make) }
+        scene.hasBackboard = hasBackboard
+        scene.onScore = { [unowned self] url, make in
+            switch make.target {
+            case .trash: trash(url, make: make)
+            case let .folder(folder): move(url, into: folder, make: make)
+            }
+        }
         scene.onLand = { [unowned self] url, point, wasThrown in
             landed(url, at: overlay.screenPoint(fromScene: point), wasThrown: wasThrown)
         }
         scene.onBasketMoved = { [unowned self] point in
             savedHome = overlay.screenPoint(fromScene: point)
             spot = locateBasket(on: screen)
+        }
+        scene.onHoopMoved = { [unowned self] point in
+            savedHoopCenter = overlay.screenPoint(fromScene: point)
         }
         overlay = OverlayWindow(scene: scene)
 
@@ -105,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         self.spot = spot
         Log.event("shoot mode on: accessibility=\(DockTrash.isTrusted) dockTile=\(spot.dockTile.map { "\($0)" } ?? "none") home=\(spot.home) screen=\(spot.screen.frame)")
         overlay.show(on: spot.screen, home: spot.home, dockTile: spot.dockTile)
+        mountHoop()
         escapeKey = HotKey(keyCode: kVK_Escape, modifiers: 0) { [unowned self] in stopShooting() }
         statusItem.button?.contentTintColor = .systemOrange
         showHint()
@@ -185,6 +214,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         return (CGRect(x: screen.frame.maxX - 140, y: screen.frame.minY + 6, width: 64, height: 64), screen)
     }
 
+    /// Puts up the folder hoop on the shoot mode screen: where the player dragged it if that's on
+    /// this screen, else at the bottom left, across from where the Trash usually sits. Takes it down
+    /// when the folder hoop is off.
+    private func mountHoop() {
+        let area = screen.visibleFrame
+        var center = CGPoint(x: area.minX + area.width * 0.2, y: area.minY + area.height * 0.28)
+        if let saved = savedHoopCenter, screen.frame.contains(saved) { center = saved }
+        overlay.mountHoop(folder: hoopFolder, rimCenter: center, animated: true)
+    }
+
     // MARK: Files
 
     private func trash(_ url: URL, make: MakeInfo) {
@@ -197,12 +236,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
             case let .success(trashed):
                 // Finder plays its own trash sound; moving the file ourselves is silent.
                 if !trashed.byFinder { sounds.play(.trash) }
-                let callout = scorekeeper.recordMake(make, bytes: bytes)
-                scene.isOnFire = scorekeeper.isOnFire
-                sounds.play(.make)
-                let undo = trashed.undoable ? ToastAction(title: "Undo") { [weak self] in self?.undoShot(nil) } : nil
-                let subtitle = ["\(name) → Trash", callout.note].compactMap { $0 }.joined(separator: " · ")
-                toast.show(ToastContent(title: callout.title, subtitle: subtitle, action: undo), on: screen, for: 6)
+                celebrate(make, of: name, into: "Trash", bytes: bytes, undoable: trashed.undoable)
             case let .failure(error):
                 toast.show(ToastContent(title: "Couldn’t trash \(name)", subtitle: error.localizedDescription), on: screen, for: 4)
                 scene.respawn(url)
@@ -210,7 +244,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    /// A file came to rest outside the Trash. A desktop file's real icon moves to where it landed
+    /// A file went through the folder hoop: it moves into the hoop's folder.
+    private func move(_ url: URL, into folder: URL, make: MakeInfo) {
+        let name = url.lastPathComponent.middleTruncated(to: 28)
+        do {
+            let moved = try trashCan.move(url, into: folder)
+            Log.event("move \(url.lastPathComponent) into \(folder.path): moved=\(moved)")
+            celebrate(make, of: name, into: folder.displayName, bytes: 0, undoable: moved)
+        } catch {
+            Log.event("move \(url.lastPathComponent) into \(folder.path): \(error)")
+            toast.show(ToastContent(title: "Couldn’t move \(name)", subtitle: error.localizedDescription), on: screen, for: 4)
+            scene.respawn(url, from: make.target)
+        }
+    }
+
+    /// Counts a make and shows its callout, "name → destination", with Undo when it can be undone.
+    /// `bytes` is how much it trashed.
+    private func celebrate(_ make: MakeInfo, of name: String, into destination: String, bytes: Int, undoable: Bool) {
+        let callout = scorekeeper.recordMake(make, bytes: bytes)
+        scene.isOnFire = scorekeeper.isOnFire
+        sounds.play(.make)
+        let undo = undoable ? ToastAction(title: "Undo") { [weak self] in self?.undoShot(nil) } : nil
+        let subtitle = ["\(name) → \(destination)", callout.note].compactMap { $0 }.joined(separator: " · ")
+        toast.show(ToastContent(title: callout.title, subtitle: subtitle, action: undo), on: screen, for: 6)
+    }
+
+    /// A file came to rest outside the goals. A desktop file's real icon moves to where it landed
     /// (kept clear of the Dock and menu bar); files from other folders stay in their folder.
     private func landed(_ url: URL, at point: CGPoint, wasThrown: Bool) {
         Log.event("landed \(url.lastPathComponent) at \(point)")
@@ -232,9 +291,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
 
     @objc func undoShot(_ sender: Any?) {
         do {
-            let restored = try trashCan.undo()
-            if isShooting { scene.respawn(restored) }
-            toast.show(ToastContent(title: "Back in play", subtitle: "\(restored.lastPathComponent.middleTruncated(to: 28)) is out of the Trash"), on: screen, for: 3)
+            let (restored, target) = try trashCan.undo()
+            if isShooting { scene.respawn(restored, from: target) }
+            let place = switch target {
+            case .trash: "the Trash"
+            case let .folder(folder): folder.displayName
+            }
+            toast.show(ToastContent(title: "Back in play", subtitle: "\(restored.lastPathComponent.middleTruncated(to: 28)) is out of \(place)"), on: screen, for: 3)
         } catch {
             toast.show(ToastContent(title: "Couldn’t undo", subtitle: error.localizedDescription), on: screen, for: 4)
         }
@@ -266,6 +329,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let sizeItem = NSMenuItem(title: "Trash Size", action: nil, keyEquivalent: "")
         sizeItem.submenu = sizes
         menu.addItem(sizeItem)
+        menu.addItem(item("Backboard", #selector(toggleBackboard(_:))))
+        folderHoopMenu.delegate = self
+        let folderHoopItem = NSMenuItem(title: "Folder Hoop", action: nil, keyEquivalent: "")
+        folderHoopItem.submenu = folderHoopMenu
+        menu.addItem(folderHoopItem)
         menu.addItem(item("Put Trash Back on Dock", #selector(putTrashBack(_:))))
         menu.addItem(item("Undo", #selector(undoShot(_:))))
         menu.addItem(.separator())
@@ -314,6 +382,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         case #selector(chooseSize(_:)):
             menuItem.state = menuItem.representedObject as? String == basketSize.rawValue ? .on : .off
             return true
+        case #selector(toggleBackboard(_:)):
+            menuItem.state = hasBackboard ? .on : .off
+            // The Dock-sized Trash never gets one.
+            return basketSize != .dock
+        case #selector(chooseHoopFolder(_:)):
+            // Off has no folder, so it's checked while the hoop is off.
+            menuItem.state = (menuItem.representedObject as? URL)?.path == hoopFolder?.path ? .on : .off
+            return true
         case #selector(putTrashBack(_:)):
             return savedHome != nil && basketSize != .dock
         case #selector(undoShot(_:)):
@@ -333,8 +409,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
     }
 
-    /// Refills the Stats submenu with the latest numbers each time it opens.
+    /// Refills the Stats submenu with the latest numbers each time it opens, and the Folder Hoop one
+    /// with the chosen folder.
     func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu !== folderHoopMenu else { return fillFolderHoopMenu() }
         let makes = scorekeeper.makes, misses = scorekeeper.misses
         var shooting = "Makes \(makes) · Misses \(misses)"
         if makes + misses > 0 { shooting += " · \(Int((Double(makes) * 100 / Double(makes + misses)).rounded()))%" }
@@ -347,6 +425,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         menu.addItem(.separator())
         menu.addItem(item("Reset Stats", #selector(resetStats(_:))))
+    }
+
+    /// Off, the usual folders, the chosen folder if it's another one, and Choose Folder….
+    private func fillFolderHoopMenu() {
+        var folders = [FileManager.SearchPathDirectory.downloadsDirectory, .desktopDirectory, .documentDirectory]
+            .compactMap { FileManager.default.urls(for: $0, in: .userDomainMask).first }
+        if let hoopFolder, !folders.contains(where: { $0.path == hoopFolder.path }) { folders.append(hoopFolder) }
+        folderHoopMenu.removeAllItems()
+        folderHoopMenu.addItem(item("Off", #selector(chooseHoopFolder(_:))))
+        folderHoopMenu.addItem(.separator())
+        for folder in folders {
+            let choice = item(folder.displayName, #selector(chooseHoopFolder(_:)))
+            choice.representedObject = folder
+            folderHoopMenu.addItem(choice)
+        }
+        folderHoopMenu.addItem(.separator())
+        folderHoopMenu.addItem(item("Choose Folder…", #selector(pickHoopFolder(_:))))
     }
 
     @objc private func chooseMode(_ sender: NSMenuItem) {
@@ -369,6 +464,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         }
         self.spot = spot
         overlay.moveBasket(home: spot.home, dockTile: spot.dockTile, animated: true)
+    }
+
+    @objc private func toggleBackboard(_ sender: Any?) {
+        hasBackboard.toggle()
+    }
+
+    @objc private func chooseHoopFolder(_ sender: NSMenuItem) {
+        useHoopFolder(sender.representedObject as? URL)
+    }
+
+    @objc private func pickHoopFolder(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Use Folder"
+        panel.message = "Files you throw through the folder hoop move into this folder"
+        panel.directoryURL = hoopFolder
+        // Hoop has no Dock icon or app menu, so bring the app forward along with the panel.
+        NSApp.activate()
+        panel.begin { [weak self] response in
+            guard response == .OK, let folder = panel.url else { return }
+            self?.useHoopFolder(folder)
+        }
+    }
+
+    private func useHoopFolder(_ folder: URL?) {
+        hoopFolder = folder
+        if isShooting { mountHoop() }
     }
 
     @objc private func putTrashBack(_ sender: Any?) {

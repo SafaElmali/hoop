@@ -45,7 +45,8 @@ final class Scorekeeper {
         }
     }
 
-    /// Counts a make and picks its callout: a dunk, then a streak, then a three, then a clean one.
+    /// Counts a make and picks its callout: a dunk, then a streak, then a bank shot, then a three,
+    /// then a clean one. `bytes` is what it trashed (nothing, for a move into a folder).
     func recordMake(_ make: MakeInfo, bytes: Int) -> Callout {
         streak += 1
         self[.makes] += 1
@@ -54,6 +55,7 @@ final class Scorekeeper {
         if make.isDunk { return Callout(title: "Dunk!") }
         if streak == Rules.fireStreak { return Callout(title: "On fire 🔥", note: "\(streak) in a row") }
         if isOnFire { return Callout(title: "\(streak) in a row 🔥") }
+        if make.isBank { return Callout(title: "Bank shot!") }
         if make.distance >= Rules.downtown { return Callout(title: "From downtown!", note: "3 points") }
         if make.isClean { return Callout(title: "Nothing but net") }
         return Callout(title: Self.cheers.randomElement()!)

@@ -21,11 +21,11 @@ final class Sounds: SoundEffects {
         case whoosh
         /// Impossible mode: the Trash darts out of the way.
         case dodge
-        /// A file hits the can.
+        /// A file hits the can or a rim.
         case clank
-        /// A file lands on the floor.
+        /// A file lands on the floor, or bangs off the backboard.
         case thud
-        /// A make, once the file is in the Trash. Classic leaves it to Finder's own trash sound.
+        /// A make, once the file is in the Trash or its folder. Classic leaves it to Finder's own trash sound.
         case make
     }
 

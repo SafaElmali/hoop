@@ -7,7 +7,7 @@ final class FileNode: SKNode {
     private static let iconSide: CGFloat = 50
 
     let url: URL
-    /// False for a file popping back out of the Trash after an undo, so it can't drop straight back in.
+    /// False for a file popping back out after an undo, so it can't drop straight back in.
     var canScore = true
     /// Scoring or landed; no longer part of the game.
     var isLeaving = false
@@ -15,8 +15,12 @@ final class FileNode: SKNode {
     var restingTime: TimeInterval = 0
     /// Where it was let go, in scene coordinates.
     var releasePoint = CGPoint.zero
-    /// Hit the can on the way.
+    /// Hit a rim on the way.
     var hitRim = false
+    /// Hit the Trash's backboard on the way.
+    var hitBoard = false
+    /// Where its centre was last frame, in scene coordinates, to tell when it drops through a hoop.
+    var previousPosition: CGPoint?
 
     private let icon = SKSpriteNode()
     private var flame: FlameTrail?
@@ -47,8 +51,8 @@ final class FileNode: SKNode {
         body.friction = 0.5
         body.linearDamping = 0.1
         body.categoryBitMask = Physics.file
-        body.collisionBitMask = Physics.wall | Physics.file | Physics.rim
-        body.contactTestBitMask = Physics.wall | Physics.rim
+        body.collisionBitMask = Physics.wall | Physics.file | Physics.rim | Physics.board
+        body.contactTestBitMask = Physics.wall | Physics.rim | Physics.board
         physicsBody = body
 
         loadThumbnail()

@@ -4,17 +4,21 @@ enum Physics {
     static let file: UInt32 = 1 << 0
     static let wall: UInt32 = 1 << 1
     static let rim: UInt32 = 1 << 2
+    /// The Trash's glass backboard.
+    static let board: UInt32 = 1 << 3
 }
 
-/// Draw order. A scoring file slots between the back and front of the Trash so it drops *into* it.
+/// Draw order. A scoring file slots between the back and front of a goal so it drops *into* it.
 enum Z {
+    /// Behind a goal: the Trash's glass, the folder hoop's board.
+    static let backboard: CGFloat = 0.5
     static let basketBack: CGFloat = 1
     static let fileInside: CGFloat = 2
     static let basketFront: CGFloat = 3
     static let file: CGFloat = 10
 }
 
-/// How the Trash behaves in shoot mode.
+/// How the Trash behaves in shoot mode. The folder hoop always stays put.
 enum Mode: String, CaseIterable {
     /// Stays put; drag it wherever you like.
     case normal
@@ -55,30 +59,41 @@ enum BasketSize: String, CaseIterable {
     }
 }
 
-/// How a file went in, for the callout.
+/// How a file went in, for the callout, and where it goes.
 struct MakeInfo {
+    /// The Trash, or the folder hoop's folder.
+    let target: Target
     /// From where the file was let go to the opening, in points.
     let distance: CGFloat
-    /// Didn't touch the can on the way in.
+    /// Didn't touch a rim or the backboard on the way in.
     let isClean: Bool
-    /// Dropped straight onto the Trash.
+    /// Dropped straight in.
     let isDunk: Bool
+    /// Went in after touching the Trash's backboard.
+    let isBank: Bool
 }
 
-/// The whole screen is the court and the Trash is the basket. Thrown files fly with the momentum
-/// of the drag; into the Trash they go to the Trash, otherwise they stay where they land.
+/// The whole screen is the court, and the Trash (plus the folder hoop, when it's up) are the goals.
+/// Thrown files fly with the momentum of the drag; into a goal they go where it sends them,
+/// otherwise they stay where they land.
 final class CourtScene: SKScene, SKPhysicsContactDelegate {
-    /// A file went in: trash it.
+    /// A file went in: trash it, or move it into the folder hoop's folder, as `make.target` says.
     var onScore: ((_ url: URL, _ make: MakeInfo) -> Void)?
-    /// A file came to rest outside the Trash at this point. False for a file popping out after an undo.
+    /// A file came to rest outside the goals at this point. False for a file popping out after an undo.
     var onLand: ((_ url: URL, _ point: CGPoint, _ wasThrown: Bool) -> Void)?
     /// The player dragged the Trash somewhere new (the bottom of the can, in scene coordinates).
     var onBasketMoved: ((CGPoint) -> Void)?
+    /// The player dragged the folder hoop somewhere new (the middle of its rim, in scene coordinates).
+    var onHoopMoved: ((CGPoint) -> Void)?
     var mode = Mode.normal {
         didSet { if mode != oldValue { modeChanged() } }
     }
     var basketSize = BasketSize.medium {
         didSet { if basketSize != oldValue { resizeBasket() } }
+    }
+    /// The grown Trash has a glass backboard to bank shots off, on its side away from the middle of the screen.
+    var hasBackboard = false {
+        didSet { if let basket { basket.hasBackboard = hasBackboard && basket.isSolid } }
     }
     /// On a streak: files thrown from now on trail flames.
     var isOnFire = false
@@ -103,14 +118,22 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
 
     private let sounds: SoundEffects
     private var basket: BasketNode?
+    private var hoop: HoopNode?
     /// Where the Trash rests (the bottom of the can) when it isn't moving or dodging.
     private var home = CGPoint.zero
     /// The Trash tile in the Dock while the basket sits on it; dropping a file there is a dunk.
     private var dockTile: CGRect?
-    private var grabOffset: CGVector?
+    /// The goal being dragged, and the pointer's offset to its position.
+    private var grab: (goal: Goal, offset: CGVector)?
     private var movingPhase: CGFloat = 0
     private var now: TimeInterval = 0
     private var elapsed: TimeInterval = 0
+
+    /// What files can go into, the Trash first.
+    private var goals: [Goal] {
+        let goals: [Goal?] = [basket, hoop]
+        return goals.compactMap { $0 }
+    }
 
     init(sounds: SoundEffects) {
         self.sounds = sounds
@@ -146,28 +169,39 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         basket.setScale(1)
         syncMovingPhase()
         guard animated else { return }
-        basket.setScale(dockTile.map { $0.height / basket.side } ?? 0.3)
-        let grow = SKAction.scale(to: 1, duration: 0.4)
-        grow.timingFunction = { t in Float(1 - pow(1 - Double(t), 3) * cos(Double(t) * 5)) } // overshoot, settle
-        basket.run(grow)
+        grow(basket, from: dockTile.map { $0.height / basket.side } ?? 0.3)
     }
 
-    /// The Dock-sized Trash stays in the Dock, so only grown ones can be grabbed.
-    func isOverBasket(_ point: CGPoint) -> Bool {
-        guard let basket, basketSize != .dock else { return false }
-        return basket.covers(offset(of: point, from: basket))
+    /// Puts up the folder hoop for `folder` with the middle of its rim at `rimCenter`, or takes it
+    /// down for nil. Unlike the Trash, it stays put in every mode.
+    func mountHoop(folder: URL?, rimCenter: CGPoint, animated: Bool) {
+        guard let folder else {
+            hoop?.removeFromParent()
+            hoop = nil
+            return
+        }
+        let hoop = currentHoop(for: folder)
+        hoop.removeAllActions()
+        hoop.position = rimCenter
+        hoop.setScale(1)
+        if animated { grow(hoop, from: 0.3) }
     }
 
-    /// Launches dropped files from `point` with the drag's velocity. Dropping right on the Trash is a dunk.
+    /// Whether a goal that can be dragged is under `point`. The Dock-sized Trash stays in the Dock.
+    func isOverGoal(_ point: CGPoint) -> Bool {
+        draggableGoal(at: point) != nil
+    }
+
+    /// Launches dropped files from `point` with the drag's velocity. Dropping right on a goal is a dunk.
     func throwFiles(_ urls: [URL], at point: CGPoint, velocity: CGVector) {
-        var dunk = isOnBasket(point)
-        if dunk, mode == .impossible, let basket {
+        var dunkedInto = goal(droppedOnAt: point)
+        if mode == .impossible, let basket, dunkedInto === basket {
             dodge(awayFrom: point.x, basket: basket, instantly: true)
-            dunk = false
+            dunkedInto = nil
         }
         let speed = hypot(velocity.dx, velocity.dy)
         let scale = speed > Tuning.maxThrowSpeed ? Tuning.maxThrowSpeed / speed : 1
-        if !dunk {
+        if dunkedInto == nil {
             let loudness = Float(min(1, max(0, (speed - 500) / 2200)))
             if loudness > 0.05 { sounds.play(.whoosh, volume: loudness * 0.8) }
         }
@@ -179,9 +213,10 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
                 y: max(point.y + spread, FileNode.radius)
             )
             file.releasePoint = file.position
+            file.previousPosition = file.position
             addChild(file)
-            if dunk, let basket {
-                score(file, in: basket, isDunk: true)
+            if let dunkedInto {
+                score(file, in: dunkedInto, isDunk: true)
             } else {
                 let damping = 1 - CGFloat(index) * 0.04
                 file.physicsBody?.velocity = CGVector(dx: velocity.dx * scale * damping, dy: velocity.dy * scale * damping)
@@ -190,50 +225,56 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         }
     }
 
-    /// After an undo: the file pops back out of the Trash, towards the middle of the screen.
-    func respawn(_ url: URL) {
-        guard let basket else { return }
+    /// After an undo: the file pops back out of where it went (the Trash, or the folder hoop while
+    /// it's up for that folder), towards the middle of the screen.
+    func respawn(_ url: URL, from target: Target = .trash) {
+        guard let goal = goals.first(where: { $0.target == target }) ?? basket else { return }
         let file = FileNode(url: url)
         file.canScore = false
-        file.position = CGPoint(x: basket.position.x, y: basket.position.y + basket.rimHeight + FileNode.radius + 6)
+        let opening = opening(of: goal)
+        file.position = CGPoint(x: opening.x, y: opening.y + FileNode.radius + 6)
         file.alpha = 0
         addChild(file)
-        let direction: CGFloat = basket.position.x > size.width / 2 ? -1 : 1
+        let direction: CGFloat = goal.position.x > size.width / 2 ? -1 : 1
         file.physicsBody?.velocity = CGVector(dx: direction * .random(in: 260...360), dy: 700)
         file.run(.fadeIn(withDuration: 0.12))
-        if let isFull = Self.trashHasItems() { basket.isFull = isFull }
+        if let basket, let isFull = Self.trashHasItems() { basket.isFull = isFull }
     }
 
     func clear() {
         for node in children where node is FileNode || node is FlameTrail { node.removeFromParent() }
-        grabOffset = nil
+        grab = nil
     }
 
-    // MARK: Dragging the Trash
+    // MARK: Dragging the goals
 
     override func mouseDown(with event: NSEvent) {
         let point = event.location(in: self)
-        guard isOverBasket(point), let basket else { return }
-        basket.removeAction(forKey: ActionKey.dash)
-        basket.removeAction(forKey: ActionKey.home)
-        grabOffset = CGVector(dx: basket.position.x - point.x, dy: basket.position.y - point.y)
-        basket.run(.scale(to: 1.06, duration: 0.1))
+        guard let goal = draggableGoal(at: point) else { return }
+        goal.removeAction(forKey: ActionKey.dash)
+        goal.removeAction(forKey: ActionKey.home)
+        grab = (goal, CGVector(dx: goal.position.x - point.x, dy: goal.position.y - point.y))
+        goal.run(.scale(to: 1.06, duration: 0.1))
     }
 
     override func mouseDragged(with event: NSEvent) {
-        guard let basket, let grabOffset else { return }
+        guard let grab else { return }
         let point = event.location(in: self)
-        basket.position = clampedHome(CGPoint(x: point.x + grabOffset.dx, y: point.y + grabOffset.dy), for: basket)
+        grab.goal.position = clamped(CGPoint(x: point.x + grab.offset.dx, y: point.y + grab.offset.dy), for: grab.goal)
     }
 
     override func mouseUp(with event: NSEvent) {
-        guard let basket, grabOffset != nil else { return }
-        grabOffset = nil
-        basket.run(.scale(to: 1, duration: 0.15))
-        home = basket.position
-        dockTile = nil
-        syncMovingPhase()
-        onBasketMoved?(home)
+        guard let goal = grab?.goal else { return }
+        grab = nil
+        goal.run(.scale(to: 1, duration: 0.15))
+        if goal === hoop {
+            onHoopMoved?(goal.position)
+        } else {
+            home = goal.position
+            dockTile = nil
+            syncMovingPhase()
+            onBasketMoved?(home)
+        }
     }
 
     // MARK: Game loop
@@ -241,24 +282,31 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     override func update(_ currentTime: TimeInterval) {
         elapsed = now > 0 ? min(currentTime - now, 0.1) : 0
         now = currentTime
-        if mode == .moving, grabOffset == nil, let basket {
+        if mode == .moving, let basket, grab?.goal !== basket {
             movingPhase += CGFloat(elapsed) * 2 * .pi / Tuning.movingPeriod
             basket.position = CGPoint(x: trackCenter + trackAmplitude * sin(movingPhase), y: home.y)
         }
     }
 
+    /// Wherever the Trash went (gliding, dodging, dragged or resized), its backboard stands on the side
+    /// away from the middle of the screen.
+    override func didEvaluateActions() {
+        guard let basket else { return }
+        basket.isBackboardOnRight = basket.position.x > size.width / 2
+    }
+
     override func didSimulatePhysics() {
-        if mode == .impossible, grabOffset == nil, let basket, basket.action(forKey: ActionKey.dash) == nil,
+        if mode == .impossible, let basket, grab?.goal !== basket, basket.action(forKey: ActionKey.dash) == nil,
            let incoming = incomingDrop(into: basket) {
             dodge(awayFrom: incoming, basket: basket)
         }
         for file in fileNodes where !file.isLeaving {
             let velocity = file.physicsBody?.velocity ?? .zero
-            // The can's sides are solid, so a file whose centre is inside it came in through the top.
-            if let basket, file.canScore, basket.isInside(offset(of: file.position, from: basket)) {
-                score(file, in: basket)
+            if file.canScore, let goal = goal(takingIn: file) {
+                score(file, in: goal)
                 continue
             }
+            file.previousPosition = file.position
             file.age += elapsed
             file.restingTime = hypot(velocity.dx, velocity.dy) < 40 ? file.restingTime + elapsed : 0
             if file.restingTime > Tuning.restBeforeLanding || file.age > Tuning.maxFlightTime {
@@ -271,9 +319,13 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     func didBegin(_ contact: SKPhysicsContact) {
         let categories = contact.bodyA.categoryBitMask | contact.bodyB.categoryBitMask
         let impulse = Float(contact.collisionImpulse)
+        let file = contact.bodyA.node as? FileNode ?? contact.bodyB.node as? FileNode
         if categories & Physics.rim != 0, impulse > 0.05 {
             sounds.play(.clank, volume: min(1, impulse / 0.8))
-            (contact.bodyA.node as? FileNode ?? contact.bodyB.node as? FileNode)?.hitRim = true
+            file?.hitRim = true
+        } else if categories & Physics.board != 0, impulse > 0.05 {
+            sounds.play(.thud, volume: min(0.9, impulse))
+            file?.hitBoard = true
         } else if categories & Physics.wall != 0, impulse > 0.15 {
             sounds.play(.thud, volume: min(0.9, impulse))
         }
@@ -281,30 +333,22 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
 
     // MARK: Scoring
 
-    private func score(_ file: FileNode, in basket: BasketNode, isDunk: Bool = false) {
+    private func score(_ file: FileNode, in goal: Goal, isDunk: Bool = false) {
         file.isLeaving = true
         file.physicsBody = nil
         file.zPosition = Z.fileInside
         file.extinguish()
-        let opening = CGPoint(x: basket.position.x, y: basket.position.y + basket.rimHeight)
+        let opening = opening(of: goal)
         let make = MakeInfo(
+            target: goal.target,
             distance: hypot(opening.x - file.releasePoint.x, opening.y - file.releasePoint.y),
-            // The Dock-sized Trash has no rim to touch, so nothing it catches is clean.
-            isClean: basket.isSolid && !file.hitRim,
-            isDunk: isDunk
+            isClean: goal.hasRim && !file.hitRim && !file.hitBoard,
+            isDunk: isDunk,
+            isBank: file.hitBoard
         )
-        // Trash it right away, so Finder's sound lands with the file.
+        // Trash or move it right away, so Finder's trash sound lands with the file.
         onScore?(file.url, make)
-
-        let target = CGPoint(x: basket.position.x, y: basket.position.y + basket.rimHeight * 0.45)
-        let drop = SKAction.move(to: target, duration: 0.26)
-        drop.timingMode = .easeIn
-        let fade = SKAction.sequence([.wait(forDuration: 0.14), .fadeOut(withDuration: 0.12)])
-        file.run(.group([drop, .scale(to: basket.isSolid ? 0.55 : 0.3, duration: 0.26), fade])) { [weak basket] in
-            file.removeFromParent()
-            basket?.bump()
-            basket?.isFull = true
-        }
+        goal.swallow(file)
     }
 
     /// A miss: the file stays where it came to rest (for a desktop file, its real icon moves there).
@@ -316,10 +360,22 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         file.run(.sequence([.wait(forDuration: 0.15), .fadeOut(withDuration: 0.3), .removeFromParent()]))
     }
 
+    /// The goal `file` went into this frame, if any.
+    private func goal(takingIn file: FileNode) -> Goal? {
+        let start = file.previousPosition ?? file.position
+        return goals.first { $0.takesIn(from: offset(of: start, from: $0), to: offset(of: file.position, from: $0)) }
+    }
+
+    /// The goal a file let go at `point` drops straight into: onto a goal, or onto the Trash tile in the Dock.
+    private func goal(droppedOnAt point: CGPoint) -> Goal? {
+        if let basket, dockTile?.insetBy(dx: -6, dy: -6).contains(point) == true { return basket }
+        return goals.first { $0.isDunk(at: offset(of: point, from: $0)) }
+    }
+
     // MARK: Moving and impossible modes
 
     private var trackCenter: CGFloat { size.width / 2 }
-    private var trackAmplitude: CGFloat { max(0, size.width / 2 - (basket?.outerHalfWidth ?? 60) - 40) }
+    private var trackAmplitude: CGFloat { max(0, size.width / 2 - (basket?.reach ?? 60) - 40) }
 
     private func modeChanged() {
         guard let basket else { return }
@@ -357,7 +413,7 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
 
     /// Darts sideways, away from `x`, then drifts back home a moment later.
     private func dodge(awayFrom x: CGFloat, basket: BasketNode, instantly: Bool = false) {
-        let margin = basket.outerHalfWidth + 20
+        let margin = basket.reach + 20
         let distance = basket.outerHalfWidth * 2.4 + .random(in: 0...90)
         let allowed = margin...max(margin, size.width - margin)
         var direction: CGFloat = x > basket.position.x ? -1 : 1
@@ -394,10 +450,21 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         let old = basket
         let basket = BasketNode(side: basketSize.side(dockTile: dockTile), isFull: old?.isFull ?? Self.trashHasItems() ?? false, isSolid: basketSize.isSolid)
         basket.position = old?.position ?? home
+        basket.hasBackboard = hasBackboard && basket.isSolid
         old?.removeFromParent()
         addChild(basket)
         self.basket = basket
         return basket
+    }
+
+    /// The folder hoop for `folder`, made or remade as needed.
+    private func currentHoop(for folder: URL) -> HoopNode {
+        if let hoop, hoop.folder == folder { return hoop }
+        hoop?.removeFromParent()
+        let hoop = HoopNode(folder: folder)
+        addChild(hoop)
+        self.hoop = hoop
+        return hoop
     }
 
     /// Swaps in a Trash of the new size where the old one stood, with a little pop.
@@ -412,21 +479,33 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         if mode == .moving { syncMovingPhase() } else if resized.position != home { glideHome(after: 0) }
     }
 
-    /// Dropped onto the can itself, or onto the Trash tile in the Dock.
-    private func isOnBasket(_ point: CGPoint) -> Bool {
-        guard let basket else { return false }
-        return basket.isInside(offset(of: point, from: basket)) || dockTile?.insetBy(dx: -6, dy: -6).contains(point) == true
+    /// Grows `node` to full size from `scale`, overshooting a little before it settles.
+    private func grow(_ node: SKNode, from scale: CGFloat) {
+        node.setScale(scale)
+        let grow = SKAction.scale(to: 1, duration: 0.4)
+        grow.timingFunction = { t in Float(1 - pow(1 - Double(t), 3) * cos(Double(t) * 5)) } // overshoot, settle
+        node.run(grow)
     }
 
-    private func offset(of point: CGPoint, from basket: BasketNode) -> CGPoint {
-        CGPoint(x: point.x - basket.position.x, y: point.y - basket.position.y)
+    private func draggableGoal(at point: CGPoint) -> Goal? {
+        goals.first { ($0 !== basket || basketSize != .dock) && $0.covers(offset(of: point, from: $0)) }
     }
 
-    private func clampedHome(_ point: CGPoint, for basket: BasketNode) -> CGPoint {
-        let margin = basket.outerHalfWidth + 10
+    /// The middle of a goal's opening, in scene coordinates.
+    private func opening(of goal: Goal) -> CGPoint {
+        CGPoint(x: goal.position.x + goal.opening.x, y: goal.position.y + goal.opening.y)
+    }
+
+    private func offset(of point: CGPoint, from goal: Goal) -> CGPoint {
+        CGPoint(x: point.x - goal.position.x, y: point.y - goal.position.y)
+    }
+
+    /// Keeps a dragged goal on screen.
+    private func clamped(_ point: CGPoint, for goal: Goal) -> CGPoint {
+        let extent = goal.extent
         return CGPoint(
-            x: min(max(point.x, margin), size.width - margin),
-            y: min(max(point.y, 0), size.height - basket.side)
+            x: min(max(point.x, -extent.minX), size.width - extent.maxX),
+            y: min(max(point.y, -extent.minY), size.height - extent.maxY)
         )
     }
 

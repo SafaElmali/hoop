@@ -3,7 +3,7 @@ import SpriteKit
 /// The Trash, grown out of its Dock tile, used as the basket. The artwork is split along the front
 /// lip of its opening: the back part draws behind a file dropping in, the front part over it.
 /// The node's origin is the bottom of the can, so scaling it grows the can upwards.
-final class BasketNode: SKNode {
+final class BasketNode: SKNode, Goal {
     let side: CGFloat
     /// A solid can only lets files in through its opening. A Dock-sized one is smaller than a
     /// thrown file, so instead it catches any file that touches it.
@@ -12,9 +12,41 @@ final class BasketNode: SKNode {
     var rimHeight: CGFloat { y(Art.openingCenter) }
     /// Half the width of the can at its lip.
     var outerHalfWidth: CGFloat { side * Art.lipHalfWidth }
+    /// Half the width of the can, out to the far edge of its backboard when it has one.
+    var reach: CGFloat { backboard.map { outerHalfWidth + side * Art.boardGap + $0.size.width } ?? outerHalfWidth }
 
     var isFull = false {
         didSet { if isFull != oldValue { applyTexture() } }
+    }
+
+    /// A glass backboard rising from one end of the lip, to bank shots off. Only for a solid can.
+    var hasBackboard: Bool {
+        get { backboard != nil }
+        set {
+            guard newValue != hasBackboard else { return }
+            backboard?.removeFromParent()
+            backboard = newValue ? Backboard(size: CGSize(width: side * Art.boardWidth, height: side * Art.boardHeight)) : nil
+            if let backboard { addChild(backboard) }
+            placeBackboard()
+        }
+    }
+
+    /// Which side of the can the backboard stands on.
+    var isBackboardOnRight = true {
+        didSet { if isBackboardOnRight != oldValue { placeBackboard() } }
+    }
+
+    // MARK: Goal
+
+    let target = Target.trash
+    var opening: CGPoint { CGPoint(x: 0, y: rimHeight) }
+    /// The Dock-sized Trash has no rim to touch.
+    var hasRim: Bool { isSolid }
+
+    /// The can, with room for its backboard on either side.
+    var extent: CGRect {
+        let top = backboard.map { $0.position.y + $0.size.height / 2 } ?? side
+        return CGRect(x: -reach - 10, y: 0, width: 2 * (reach + 10), height: max(side, top))
     }
 
     /// Landmarks in the system Trash artwork, as fractions of the icon measured from its top.
@@ -25,10 +57,15 @@ final class BasketNode: SKNode {
         static let lipSides: CGFloat = 0.18
         static let bottom: CGFloat = 0.9
         static let bottomHalfWidth: CGFloat = 0.26
+        /// The backboard's size, and its gap to the lip.
+        static let boardWidth: CGFloat = 0.16
+        static let boardHeight: CGFloat = 0.85
+        static let boardGap: CGFloat = 0.015
     }
 
     private let back = SKSpriteNode()
     private let front = SKSpriteNode()
+    private var backboard: Backboard?
     private var catchMargin: CGFloat { isSolid ? 0 : FileNode.radius * 0.8 }
 
     /// Where the bottom of the can sits for the Trash in a Dock tile: the icon is the tile's top
@@ -91,6 +128,28 @@ final class BasketNode: SKNode {
         abs(point.x) < outerHalfWidth + 6 && point.y > -6 && point.y < rimHeight + side * 0.08
     }
 
+    /// The can's sides are solid, so a file whose centre is inside it came in through the top.
+    func takesIn(from _: CGPoint, to end: CGPoint) -> Bool {
+        isInside(end)
+    }
+
+    func isDunk(at point: CGPoint) -> Bool {
+        isInside(point)
+    }
+
+    /// The file shrinks down into the can, which gives a little squash and shows it's full.
+    func swallow(_ file: FileNode) {
+        let target = CGPoint(x: position.x, y: position.y + rimHeight * 0.45)
+        let drop = SKAction.move(to: target, duration: 0.26)
+        drop.timingMode = .easeIn
+        let fade = SKAction.sequence([.wait(forDuration: 0.14), .fadeOut(withDuration: 0.12)])
+        file.run(.group([drop, .scale(to: isSolid ? 0.55 : 0.3, duration: 0.26), fade])) { [weak self] in
+            file.removeFromParent()
+            self?.bump()
+            self?.isFull = true
+        }
+    }
+
     /// A little squash when something lands inside.
     func bump() {
         let squash = SKAction.scaleX(to: 1.07, y: 0.93, duration: 0.07)
@@ -102,6 +161,13 @@ final class BasketNode: SKNode {
     /// Height above the bottom of the can for a point `fraction` down from the top of the artwork.
     private func y(_ fraction: CGFloat) -> CGFloat {
         side * (Art.bottom - fraction)
+    }
+
+    /// Stands the backboard just outside the lip on its side, rising from the lip's end.
+    private func placeBackboard() {
+        guard let backboard else { return }
+        let x = outerHalfWidth + side * Art.boardGap + backboard.size.width / 2
+        backboard.position = CGPoint(x: isBackboardOnRight ? x : -x, y: y(Art.lipSides) + backboard.size.height / 2)
     }
 
     private func applyTexture() {

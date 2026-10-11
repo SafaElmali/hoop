@@ -49,6 +49,24 @@ extension NSAttributedString {
     }
 }
 
+extension URL {
+    /// The name Finder shows for the file or folder.
+    var displayName: String { FileManager.default.displayName(atPath: path(percentEncoded: false)) }
+}
+
+extension UserDefaults {
+    /// A point saved with `setPoint(_:forKey:)`.
+    func point(forKey key: String) -> CGPoint? {
+        guard let xy = array(forKey: key) as? [Double], xy.count == 2 else { return nil }
+        return CGPoint(x: xy[0], y: xy[1])
+    }
+
+    /// Saves a point as [x, y]; nil removes it.
+    func setPoint(_ point: CGPoint?, forKey key: String) {
+        set(point.map { [Double($0.x), Double($0.y)] }, forKey: key)
+    }
+}
+
 extension String {
     /// "a-very-long-file-name.png" → "a-very-lo…name.png"
     func middleTruncated(to limit: Int) -> String {

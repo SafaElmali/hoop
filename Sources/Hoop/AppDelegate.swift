@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private struct Spot {
         /// The bottom of the can, in screen coordinates.
         let home: CGPoint
-        /// The Trash tile in the Dock; nil once the basket has been dragged off it.
+        /// The Trash tile in the Dock; nil once the basket has been dragged off it, or on a screen without the Dock.
         let dockTile: CGRect?
         let screen: NSScreen
     }
@@ -25,6 +25,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private var escapeKey: HotKey?
     private var dockWatcher: Timer?
     private var spot: Spot?
+
+    /// Recording lets go of the current shortcut, so typing it records it instead of toggling shoot
+    /// mode; shoot mode stops too, so Esc cancels the recording instead of leaving shoot mode.
+    private lazy var shortcutWindow = ShortcutWindow { [unowned self] shortcut in
+        if let shortcut {
+            registerShortcut(shortcut)
+        } else {
+            toggleKey = nil
+            if isShooting { stopShooting() }
+        }
+    }
 
     private var isShooting: Bool { escapeKey != nil }
     private var screen: NSScreen { spot?.screen ?? NSScreen.main ?? NSScreen.screens[0] }
@@ -64,7 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         }
         scene.onBasketMoved = { [unowned self] point in
             savedHome = overlay.screenPoint(fromScene: point)
-            spot = locateBasket()
+            spot = locateBasket(on: screen)
         }
         overlay = OverlayWindow(scene: scene)
 
@@ -72,13 +83,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         statusItem.button?.image = NSImage(systemSymbolName: "basketball.fill", accessibilityDescription: "Hoop")
         statusItem.menu = makeMenu()
 
-        toggleKey = HotKey(keyCode: kVK_ANSI_H, modifiers: controlKey | optionKey) { [unowned self] in toggleShootMode(nil) }
         NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
             self?.followTrash()
         }
 
         if !DockTrash.isTrusted { DockTrash.requestAccess() }
-        toast.show(ToastContent(title: "Hoop is ready", subtitle: "Press ⌃⌥H, or use 🏀 in the menu bar, to start shooting"), on: screen, for: 5)
+        toast.show(ToastContent(title: "Hoop is ready", subtitle: "Press \(Shortcut.saved.symbols), or use 🏀 in the menu bar, to start shooting"), on: screen, for: 5)
+        // After the welcome, so a shortcut that can't be registered gets the last word.
+        registerShortcut()
     }
 
     // MARK: Shoot mode
@@ -88,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     private func startShooting() {
-        let spot = locateBasket()
+        let spot = locateBasket(on: .underPointer)
         self.spot = spot
         Log.event("shoot mode on: accessibility=\(DockTrash.isTrusted) dockTile=\(spot.dockTile.map { "\($0)" } ?? "none") home=\(spot.home) screen=\(spot.screen.frame)")
         overlay.show(on: spot.screen, home: spot.home, dockTile: spot.dockTile)
@@ -121,30 +133,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         toast.rest(ToastContent(title: "Shoot mode · \(mode.title)", subtitle: hint), on: screen)
     }
 
+    /// Keeps the basket on the Trash as the Dock resizes or moves, including onto or off this screen,
+    /// and starts over if the screen goes away or changes. A basket the player dragged stays put.
     private func followTrash() {
-        // Only while the basket sits on the Dock. Skip while dragging, and while the pointer is over
-        // the Dock, where magnification shifts icons.
-        guard isShooting, !overlay.isArmed, let current = spot, let tile = current.dockTile else { return }
+        // Skip while dragging.
+        guard isShooting, !overlay.isArmed, let current = spot else { return }
+        guard let screen = NSScreen.screens.first(where: { $0.displayID == current.screen.displayID }), screen.frame == overlay.frame else {
+            stopShooting()
+            return startShooting()
+        }
+        guard current.dockTile != nil || current.home != savedHome else { return }
+        let latest = locateBasket(on: screen)
+        // Skip while the pointer is over the Dock, where magnification shifts icons.
         let pointer = NSEvent.mouseLocation
-        guard pointer.y > tile.maxY + 40 || !current.screen.frame.contains(pointer) else { return }
-        let latest = locateBasket()
-        if latest.screen != current.screen {
+        if let tile = latest.dockTile, latest.screen.frame.contains(pointer), pointer.y <= tile.maxY + 40 { return }
+        if latest.screen.displayID != screen.displayID {
+            // The Dock-sized Trash follows the Dock to another screen.
             stopShooting()
             startShooting()
-        } else if latest.dockTile != tile {
+        } else if latest.home != current.home || latest.dockTile != current.dockTile {
             spot = latest
-            overlay.moveBasket(home: latest.home, dockTile: latest.dockTile, animated: false)
+            // Growing out of the Dock, or back into it, is worth seeing; a nudge along the Dock isn't.
+            overlay.moveBasket(home: latest.home, dockTile: latest.dockTile, animated: (latest.dockTile == nil) != (current.dockTile == nil))
         }
     }
 
-    /// The spot the player dragged the basket to, else the Trash tile in the Dock.
-    /// The Dock-sized Trash always sits in the Dock.
-    private func locateBasket() -> Spot {
-        if basketSize != .dock, let home = savedHome, let screen = NSScreen.screens.first(where: { $0.frame.contains(home) }) {
+    /// Where the basket goes on `screen`: the spot the player dragged it to if that's on this screen,
+    /// else the Trash tile if the Dock is here, else the bottom centre of the screen.
+    /// The Dock-sized Trash always sits in the Dock, on the Dock's screen.
+    private func locateBasket(on screen: NSScreen) -> Spot {
+        if basketSize != .dock, let home = savedHome, screen.frame.contains(home) {
             return Spot(home: home, dockTile: nil, screen: screen)
         }
-        let (tile, screen) = locateTrash()
-        return Spot(home: BasketNode.base(onDockTile: tile), dockTile: tile, screen: screen)
+        let trash = locateTrash()
+        if basketSize == .dock || trash.screen.displayID == screen.displayID {
+            return Spot(home: BasketNode.base(onDockTile: trash.frame), dockTile: trash.frame, screen: trash.screen)
+        }
+        return Spot(home: CGPoint(x: screen.frame.midX, y: screen.frame.minY + 10), dockTile: nil, screen: screen)
     }
 
     /// The Trash tile from the Dock, or a best guess (bottom-right) without Accessibility access.
@@ -170,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             case let .success(trashed):
                 // Finder plays its own trash sound; moving the file ourselves is silent.
                 if !trashed.byFinder { sounds.play(.trash) }
+                sounds.play(.make)
                 let undo = trashed.undoable ? ToastAction(title: "Undo") { [weak self] in self?.undoShot(nil) } : nil
                 toast.show(ToastContent(title: CourtScene.randomCheer(), subtitle: "\(name) → Trash", action: undo), on: screen, for: 6)
             case let .failure(error):
@@ -210,9 +236,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func makeMenu() -> NSMenu {
         let menu = NSMenu()
-        let shoot = item("Shoot Mode", #selector(toggleShootMode(_:)), key: "h")
-        shoot.keyEquivalentModifierMask = [.control, .option]
-        menu.addItem(shoot)
+        // Its key equivalent shows the current shortcut; see validateMenuItem.
+        menu.addItem(item("Shoot Mode", #selector(toggleShootMode(_:))))
 
         let modes = NSMenu()
         for mode in Mode.allCases {
@@ -236,7 +261,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         menu.addItem(item("Put Trash Back on Dock", #selector(putTrashBack(_:))))
         menu.addItem(item("Undo", #selector(undoShot(_:))))
         menu.addItem(.separator())
-        menu.addItem(item("Sound Effects", #selector(toggleSound(_:))))
+
+        let packs = NSMenu()
+        for pack in SoundPack.allCases {
+            if pack == .off { packs.addItem(.separator()) }
+            let choice = item(pack.title, #selector(chooseSoundPack(_:)))
+            choice.representedObject = pack.rawValue
+            packs.addItem(choice)
+        }
+        let soundsItem = NSMenuItem(title: "Sounds", action: nil, keyEquivalent: "")
+        soundsItem.submenu = packs
+        menu.addItem(soundsItem)
+        menu.addItem(item("Shortcut…", #selector(showShortcutWindow(_:))))
+        menu.addItem(item("Open at Login", #selector(toggleOpenAtLogin(_:))))
         menu.addItem(item("Allow Accessibility…", #selector(openAccessibilitySettings(_:))))
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Hoop", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -253,6 +290,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         switch menuItem.action {
         case #selector(toggleShootMode(_:)):
             menuItem.state = isShooting ? .on : .off
+            let shortcut = Shortcut.saved
+            menuItem.keyEquivalent = shortcut.keyEquivalent
+            menuItem.keyEquivalentModifierMask = shortcut.modifierFlags
             return true
         case #selector(chooseMode(_:)):
             menuItem.state = menuItem.representedObject as? String == mode.rawValue ? .on : .off
@@ -265,8 +305,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         case #selector(undoShot(_:)):
             menuItem.title = trashCan.lastShot.map { "Undo “\($0.original.lastPathComponent.middleTruncated(to: 28))”" } ?? "Undo"
             return trashCan.lastShot != nil
-        case #selector(toggleSound(_:)):
-            menuItem.state = sounds.isEnabled ? .on : .off
+        case #selector(chooseSoundPack(_:)):
+            menuItem.state = menuItem.representedObject as? String == sounds.pack.rawValue ? .on : .off
+            return true
+        case #selector(toggleOpenAtLogin(_:)):
+            menuItem.state = LoginItem.isEnabled ? .on : .off
             return true
         case #selector(openAccessibilitySettings(_:)):
             menuItem.isHidden = DockTrash.isTrusted
@@ -288,20 +331,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         basketSize = size
         // Going to or from Dock Size moves the Trash between the Dock and wherever it was dragged.
         guard isShooting, wasDock != (size == .dock) else { return }
-        let spot = locateBasket()
+        let spot = locateBasket(on: screen)
+        guard spot.screen.displayID == screen.displayID else {
+            // The Dock-sized Trash lives on the Dock's screen.
+            stopShooting()
+            return startShooting()
+        }
         self.spot = spot
         overlay.moveBasket(home: spot.home, dockTile: spot.dockTile, animated: true)
     }
 
     @objc private func putTrashBack(_ sender: Any?) {
         savedHome = nil
-        spot = locateBasket()
+        spot = locateBasket(on: screen)
         guard isShooting, let spot else { return }
         overlay.moveBasket(home: spot.home, dockTile: spot.dockTile, animated: true)
     }
 
-    @objc private func toggleSound(_ sender: Any?) {
-        sounds.isEnabled.toggle()
+    @objc private func chooseSoundPack(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let pack = SoundPack(rawValue: raw) else { return }
+        sounds.pack = pack
+        sounds.preview()
+    }
+
+    @objc private func showShortcutWindow(_ sender: Any?) {
+        shortcutWindow.show()
+    }
+
+    /// Registers the shoot mode shortcut, letting go of the old one first in case it's the same keys.
+    private func registerShortcut(_ shortcut: Shortcut = .saved) {
+        toggleKey = nil
+        toggleKey = HotKey(keyCode: shortcut.keyCode, modifiers: shortcut.modifiers) { [unowned self] in toggleShootMode(nil) }
+        guard toggleKey?.isRegistered == false else { return }
+        toast.show(ToastContent(title: "Couldn’t use \(shortcut.symbols)", subtitle: "Something else has it · pick another in 🏀 → Shortcut…"), on: screen, for: 5)
+    }
+
+    @objc private func toggleOpenAtLogin(_ sender: Any?) {
+        do {
+            try LoginItem.toggle()
+        } catch {
+            toast.show(ToastContent(title: "Couldn’t change Open at Login", subtitle: error.localizedDescription), on: screen, for: 4)
+        }
     }
 
     @objc private func openAccessibilitySettings(_ sender: Any?) {

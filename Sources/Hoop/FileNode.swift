@@ -50,6 +50,8 @@ final class FileNode: SKNode {
         body.restitution = 0.35
         body.friction = 0.5
         body.linearDamping = 0.1
+        // Thrown files move fast and the can's lips and the backboard are thin edges; without this a file can tunnel through.
+        body.usesPreciseCollisionDetection = true
         body.categoryBitMask = Physics.file
         body.collisionBitMask = Physics.wall | Physics.file | Physics.rim | Physics.board
         body.contactTestBitMask = Physics.wall | Physics.rim | Physics.board

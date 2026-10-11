@@ -4,6 +4,8 @@
 
 A tiny macOS menu bar app that turns your Trash into a basketball hoop. Drag a file off your desktop, swing, let go: it flies with the momentum of your drag, and if it lands in the can it goes to the Trash.
 
+▶️ **[Watch the demo on X](https://x.com/SafaElmali/status/2109359345699868825)**
+
 ## Play
 
 - **⌃⌥H** (or 🏀 in the menu bar) turns on shoot mode: the Dock's Trash grows into a basket. **Esc** turns it off.

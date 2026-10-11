@@ -22,7 +22,21 @@ A tiny macOS menu bar app that turns your Trash into a basketball hoop. Drag a f
 
 ## Install
 
-Needs macOS 14 or later and the Swift toolchain (Xcode or the Command Line Tools).
+Needs macOS 14 or later. Runs on Apple silicon and Intel Macs.
+
+1. Download `Hoop-<version>.zip` from the [Releases page](https://github.com/SafaElmali/hoop/releases).
+2. Unzip it and move **Hoop.app** to Applications.
+3. Hoop isn't notarized yet, so open it the first time with right-click → **Open**. On macOS 15 or later, try to open it once, then click **Open Anyway** in System Settings → Privacy & Security. Or skip the dialog from Terminal:
+
+   ```bash
+   xattr -dr com.apple.quarantine /Applications/Hoop.app
+   ```
+
+On first launch macOS asks for **Accessibility** (to find the Trash in the Dock). The first make asks to let Hoop **control Finder** (to trash files the way Finder does, and to move a missed file's icon to where it landed). The app is ad-hoc signed, so after an update or a rebuild macOS may ask again.
+
+### Build from source
+
+Needs the Swift toolchain (Xcode or the Command Line Tools).
 
 ```bash
 git clone https://github.com/SafaElmali/hoop.git
@@ -30,8 +44,6 @@ cd hoop
 ./build.sh
 open build/Hoop.app
 ```
-
-On first launch macOS asks for **Accessibility** (to find the Trash in the Dock). The first make asks to let Hoop **control Finder** (to trash files the way Finder does, and to move a missed file's icon to where it landed). The app is ad-hoc signed, so after a rebuild macOS may ask again.
 
 ## How it works
 
@@ -49,6 +61,22 @@ On first launch macOS asks for **Accessibility** (to find the Trash in the Dock)
 
 - `Sources/Hoop/`: the app (AppKit + SpriteKit, no dependencies).
 - `Promo/` + `promo.sh`: renders the demo video and the cover from the game's own code (needs `ffmpeg`).
+
+## Releasing
+
+Bump `CFBundleShortVersionString` and `CFBundleVersion` in `Info.plist`, then:
+
+```bash
+./release.sh
+```
+
+It builds a universal Hoop.app (Apple silicon + Intel; needs Xcode), zips it to `build/Hoop-<version>.zip` and prints its SHA-256. Attach the zip to a GitHub release.
+
+It's ad-hoc signed by default. With a Developer ID, set `SIGN_IDENTITY` to sign it with the hardened runtime, and `NOTARY_PROFILE` (a `xcrun notarytool store-credentials` profile) to notarize and staple it too:
+
+```bash
+SIGN_IDENTITY="Developer ID Application: …" NOTARY_PROFILE=hoop ./release.sh
+```
 
 ## License
 

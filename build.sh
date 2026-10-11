@@ -1,10 +1,16 @@
 #!/bin/bash
-# Builds build/Hoop.app (release, ad-hoc signed, with a generated icon).
+# Builds build/Hoop.app (release, with a generated icon). release.sh zips it for a download.
+#   ARCHS="arm64 x86_64"                         architectures to build (default: this Mac's)
+#   SIGN_IDENTITY="Developer ID Application: …"  sign with the hardened runtime (default: ad-hoc)
 set -euo pipefail
 cd "$(dirname "$0")"
 
-swift build -c release
-BIN="$(swift build -c release --show-bin-path)/Hoop"
+flags=(-c release)
+for arch in ${ARCHS:-}; do
+  flags+=(--arch "$arch")
+done
+swift build "${flags[@]}"
+BIN="$(swift build "${flags[@]}" --show-bin-path)/Hoop"
 
 APP="build/Hoop.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build/Hoop.iconset
@@ -18,5 +24,10 @@ for size in 16 32 128 256 512; do
 done
 iconutil -c icns build/Hoop.iconset -o "$APP/Contents/Resources/Hoop.icns"
 
-codesign --force --sign - "$APP" >/dev/null
+if [[ -n "${SIGN_IDENTITY:-}" ]]; then
+  # Hardened runtime blocks Apple Events to Finder unless the entitlement allows them.
+  codesign --force --options runtime --timestamp --entitlements Hoop.entitlements --sign "$SIGN_IDENTITY" "$APP"
+else
+  codesign --force --sign - "$APP" >/dev/null
+fi
 echo "Built $APP"

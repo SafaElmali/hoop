@@ -4,7 +4,7 @@
 
 A tiny macOS menu bar app that turns your Trash into a basketball hoop. Drag a file off your desktop, swing, let go: it flies with the momentum of your drag, and if it lands in the can it goes to the Trash.
 
-▶️ **[Watch what's new in 1.1 on X](https://x.com/SafaElmali/status/2109377706567844051)** · [the first demo](https://x.com/SafaElmali/status/2109359345699868825)
+▶️ **[Watch the demo on X](https://x.com/SafaElmali/status/2109377706567844051)**
 
 ## Play
 

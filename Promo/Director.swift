@@ -4,8 +4,14 @@ import SpriteKit
 /// Plays a scripted session of Hoop on the fake desktop, driving the real game scene,
 /// and renders it to an MP4 with sound.
 final class Director {
+    /// `funny` has meme captions and an end card; `gameplay` looks like a plain screen recording, with music.
+    enum Cut {
+        case funny, gameplay
+
+        var duration: TimeInterval { self == .funny ? 37 : 44 }
+    }
+
     static let fps = 60.0
-    static let duration: TimeInterval = 37
     static let pixelSize = (width: 1920, height: 1080)
 
     private enum Aim {
@@ -25,19 +31,21 @@ final class Director {
     /// Matches CourtScene's Moving mode.
     private static let movingPeriod: CGFloat = 8
 
+    private let cut: Cut
     private let log = SoundLog()
     private let files: PromoFiles
     private let scene: CourtScene
     private let stage: Stage
     private var beats: [(time: TimeInterval, run: () -> Void)] = []
     private var reactions: [URL: (score: () -> Void, land: () -> Void)] = [:]
-    private var cheers = ["Swish!", "Buckets!", "Splash!", "Count it!"]
+    private var cheers = ["Swish!", "Buckets!", "Splash!", "Count it!", "Nothing but net", "Money", "Swish!"]
     private var denials = ["Denied!", "Nope", "Not today"]
     private var now: TimeInterval = 0
     private var lastBasketX: CGFloat?
     private var basketMovingLeft = false
 
-    init() throws {
+    init(cut: Cut) throws {
+        self.cut = cut
         files = try PromoFiles()
         scene = CourtScene(sounds: log)
         scene.size = Stage.size
@@ -63,23 +71,27 @@ final class Director {
             print(String(format: "%6.2fs  in the Trash   %@", now, url.lastPathComponent))
             reactions.removeValue(forKey: url)?.score()
         }
-        scene.onLand = { [unowned self] url, point, _ in
+        scene.onLand = { [unowned self] url, point, wasThrown in
             stage.moveIcon(url, to: point)
+            print(String(format: "%6.2fs  landed         %@", now, url.lastPathComponent))
+            guard wasThrown else { return }
             if scene.mode == .impossible {
                 let denial = denials.isEmpty ? "Denied!" : denials.removeFirst()
                 stage.showToast(title: denial, subtitle: "Impossible mode never lets one in", for: 2.2)
             } else {
                 stage.showToast(title: "Brick!", subtitle: "\(url.lastPathComponent.middleTruncated(to: 26)) stays where it landed", for: 2.2)
             }
-            print(String(format: "%6.2fs  landed         %@", now, url.lastPathComponent))
             reactions.removeValue(forKey: url)?.land()
         }
-        writeScript()
+        switch cut {
+        case .funny: writeFunnyScript()
+        case .gameplay: writeGameplayScript()
+        }
     }
 
-    // MARK: The script
+    // MARK: The scripts
 
-    private func writeScript() {
+    private func writeFunnyScript() {
         let stage = stage
         beat(0.2) { stage.showCaption("my desktop after one (1) week") }
         beat(2.4) {
@@ -122,6 +134,43 @@ final class Director {
         }
     }
 
+    /// No captions: start from the 🏀 menu, a few makes and a miss, Undo, then every size and mode,
+    /// ending on the real Dock-sized Trash.
+    private func writeGameplayScript() {
+        let clutterScreenshot = files.clutter[2], logo = files.clutter[5]
+        pickMenu(at: 0.8, title: "Hoop", items: ["Shoot Mode", "Mode", "Trash Size", "Put Trash Back on Dock", "Undo", "Sound Effects", "Quit Hoop"],
+                 selected: -1, choice: 0) { self.startShooting() }
+
+        throwFile(files.screenshot, at: 3.2, release: { _ in CGPoint(x: 560, y: 470) }, flight: 1.25, aim: .center)
+        throwFile(files.psd, at: 6.2, release: { _ in CGPoint(x: 380, y: 430) }, flight: 1.2, aim: .leftLip)
+        throwFile(files.resume, at: 9.0, release: { _ in CGPoint(x: 760, y: 640) }, flight: 1.15, aim: .center)
+        clickUndo(at: 11.9, file: files.resume)
+        throwFile(files.resume, at: 14.8, release: { icon in CGPoint(x: icon.x + 130, y: icon.y + 110) }, flight: 1.1, aim: .center)
+
+        pickMenu(at: 17.8, title: "Trash Size", items: BasketSize.allCases.map(\.title), selected: 1, choice: 3) {
+            self.scene.basketSize = .huge
+        }
+        throwFile(files.photo, at: 19.5, release: { _ in CGPoint(x: 650, y: 380) }, flight: 1.2, aim: .center)
+
+        pickMenu(at: 22.4, title: "Mode", items: Mode.allCases.map(\.title), selected: 0, choice: 1) { self.setMode(.moving) }
+        throwFile(files.taxes, at: 24.0, release: { _ in CGPoint(x: 430, y: 640) }, flight: 1.25, aim: .lead)
+
+        pickMenu(at: 26.9, title: "Mode", items: Mode.allCases.map(\.title), selected: 1, choice: 2) { self.setMode(.impossible) }
+        throwFile(clutterScreenshot, at: 28.6, release: { icon in CGPoint(x: icon.x - 300, y: icon.y - 40) }, flight: 1.0, aim: .center)
+        dunk(clutterScreenshot, at: 33.0, onLand: {})
+
+        pickMenu(at: 35.0, title: "Mode", items: Mode.allCases.map(\.title), selected: 2, choice: 0) { self.setMode(.normal) }
+        pickMenu(at: 36.8, title: "Trash Size", items: BasketSize.allCases.map(\.title), selected: 3, choice: 4) {
+            self.scene.basketSize = .dock
+        }
+        throwFile(logo, at: 38.6, release: { icon in CGPoint(x: icon.x - 330, y: icon.y + 40) }, flight: 1.2, aim: .center)
+
+        beat(42.4) {
+            self.stage.hideToast()
+            self.stage.fadeToBlack(duration: 1.2)
+        }
+    }
+
     private func startShooting() {
         let tile = stage.trashTile
         scene.mountBasket(home: BasketNode.base(onDockTile: tile), dockTile: tile, animated: true)
@@ -131,7 +180,11 @@ final class Director {
 
     private func setMode(_ mode: Mode) {
         scene.mode = mode
-        let hint = mode == .moving ? "The Trash is on the move · esc to stop" : "Good luck · esc to stop"
+        let hint = switch mode {
+        case .normal: "Throw files into the Trash · drag the Trash to move it · esc to stop"
+        case .moving: "The Trash is on the move · esc to stop"
+        case .impossible: "Good luck · esc to stop"
+        }
         stage.showToast(title: "Shoot mode · \(mode.title)", subtitle: hint)
     }
 
@@ -200,6 +253,20 @@ final class Director {
         }
     }
 
+    /// Click Undo in the toast: the file pops back out of the Trash and lands on the desktop.
+    private func clickUndo(at start: TimeInterval, file url: URL) {
+        beat(start) {
+            guard let button = self.stage.undoButtonPosition else { return }
+            self.moveCursor(to: button, duration: 0.5)
+        }
+        beat(start + 0.6) {
+            self.log.click()
+            self.stage.showToast(title: "Back in play", subtitle: "\(url.lastPathComponent.middleTruncated(to: 26)) is out of the Trash", for: 2.5)
+            self.scene.respawn(url)
+            RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.4))
+        }
+    }
+
     /// Open a 🏀 menu, move to a row and click it.
     private func pickMenu(at start: TimeInterval, title: String, items: [String], selected: Int, choice: Int, apply: @escaping () -> Void) {
         var rows: [CGPoint] = []
@@ -250,7 +317,7 @@ final class Director {
 
     /// Renders the video to `output`, or with nil only simulates and prints what happens.
     func render(to output: URL?) throws {
-        let frameCount = Int(Self.duration * Self.fps)
+        let frameCount = Int(cut.duration * Self.fps)
         let renderer = FrameRenderer(scene: scene, width: Self.pixelSize.width, height: Self.pixelSize.height)
         let silent = FileManager.default.temporaryDirectory.appending(path: "hoop-promo-video.mp4")
         var encoder: (process: Process, pipe: Pipe)?
@@ -275,7 +342,7 @@ final class Director {
             trackBasket()
             if let encoder {
                 renderer.pixels.withUnsafeBytes { encoder.pipe.fileHandleForWriting.write(Data($0)) }
-                if frame % 120 == 0 { print("rendered \(frame / 60)s / \(Int(Self.duration))s") }
+                if frame % 120 == 0 { print("rendered \(frame / 60)s / \(Int(cut.duration))s") }
             }
             RunLoop.main.run(until: Date())
         }
@@ -284,7 +351,7 @@ final class Director {
         try encoder.pipe.fileHandleForWriting.close()
         encoder.process.waitUntilExit()
         let soundtrack = FileManager.default.temporaryDirectory.appending(path: "hoop-promo-sound.wav")
-        try log.writeSoundtrack(to: soundtrack, duration: Self.duration)
+        try log.writeSoundtrack(to: soundtrack, duration: cut.duration, music: cut == .gameplay ? Music.render(duration: cut.duration) : nil)
         try FFmpeg.run([
             "-i", silent.path, "-i", soundtrack.path, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             "-shortest", "-movflags", "+faststart", output.path,

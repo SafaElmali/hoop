@@ -90,13 +90,19 @@ final class SoundLog: SoundEffects {
         events.append((.click, 1, now))
     }
 
-    /// Mixes every event into a stereo WAV of `duration` seconds.
-    func writeSoundtrack(to url: URL, duration: TimeInterval) throws {
+    /// Mixes every event, over optional background `music`, into a stereo WAV of `duration` seconds.
+    func writeSoundtrack(to url: URL, duration: TimeInterval, music: (left: [Float], right: [Float])? = nil) throws {
         let rate = 44_100.0
         let sounds = Sounds()
         let frames = Int(duration * rate)
         var left = [Float](repeating: 0, count: frames)
         var right = [Float](repeating: 0, count: frames)
+        if let music {
+            for index in 0..<min(frames, music.left.count) {
+                left[index] = music.left[index] * 0.42
+                right[index] = music.right[index] * 0.42
+            }
+        }
         let click = Self.click(rate: rate)
 
         for event in events {

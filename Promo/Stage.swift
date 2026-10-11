@@ -26,6 +26,8 @@ final class Stage {
     private(set) var trashTile = CGRect.zero
     private(set) var statusIconPosition = CGPoint.zero
     private(set) var icons: [URL: DesktopIcon] = [:]
+    /// Where the toast's Undo button is, while one is showing.
+    private(set) var undoButtonPosition: CGPoint?
     /// Where Finder may put icons: below the menu bar, above the Dock.
     let desktopArea = CGRect(x: 0, y: 84, width: Stage.size.width, height: Stage.size.height - Stage.menuBarHeight - 84).insetBy(dx: 44, dy: 50)
 
@@ -84,11 +86,13 @@ final class Stage {
         return CGPoint(x: cursor.position.x + offset.x, y: cursor.position.y + offset.y)
     }
 
-    /// Like Finder after a miss: the icon jumps to where the file landed, kept clear of the Dock and menu bar.
+    /// Like Finder after a miss: the icon jumps to where the file landed, kept clear of the Dock and
+    /// menu bar. A file back from the Trash gets its icon again.
     func moveIcon(_ url: URL, to point: CGPoint) {
-        guard let icon = icons[url] else { return }
+        let clamped = CGPoint(x: min(max(point.x, desktopArea.minX), desktopArea.maxX), y: min(max(point.y, desktopArea.minY), desktopArea.maxY))
+        guard let icon = icons[url] else { return place(url, at: clamped) }
         icon.alpha = 1
-        icon.position = CGPoint(x: min(max(point.x, desktopArea.minX), desktopArea.maxX), y: min(max(point.y, desktopArea.minY), desktopArea.maxY))
+        icon.position = clamped
     }
 
     func removeIcon(_ url: URL) {
@@ -129,6 +133,7 @@ final class Stage {
     /// The app's top-of-screen message, drawn larger so it reads in a video.
     func showToast(title: String, subtitle: String, undo: Bool = false, for duration: TimeInterval? = nil) {
         toast?.removeFromParent()
+        undoButtonPosition = nil
         let scale: CGFloat = 1.35
         let ball = Props.symbol("basketball.fill", size: 20 * scale, color: .systemOrange)
         let titleLabel = Props.label(title, size: 13 * scale, weight: .semibold, color: NSColor(white: 0.08, alpha: 1))
@@ -162,13 +167,19 @@ final class Stage {
             pill.addChild(button)
         }
         pill.position = CGPoint(x: Self.size.width / 2, y: Self.size.height - Self.menuBarHeight - height / 2 - 6)
+        if let button { undoButtonPosition = CGPoint(x: pill.position.x + button.position.x, y: pill.position.y) }
         pill.zPosition = Layer.toast
         scene.addChild(pill)
         toast = pill
         if let duration {
             pill.run(.sequence([.wait(forDuration: duration), .run { [weak self] in
                 guard let self else { return }
-                if let resting = restingToast { showToast(title: resting.title, subtitle: resting.subtitle) } else { pill.removeFromParent() }
+                if let resting = restingToast {
+                    showToast(title: resting.title, subtitle: resting.subtitle)
+                } else {
+                    pill.removeFromParent()
+                    undoButtonPosition = nil
+                }
             }]))
         } else {
             restingToast = (title, subtitle)
@@ -177,6 +188,7 @@ final class Stage {
 
     func hideToast() {
         restingToast = nil
+        undoButtonPosition = nil
         toast?.run(.sequence([.fadeOut(withDuration: 0.3), .removeFromParent()]))
         toast = nil
     }
@@ -257,6 +269,15 @@ final class Stage {
         menu?.removeFromParent()
         menu = nil
         menuRows = []
+    }
+
+    func fadeToBlack(duration: TimeInterval) {
+        let black = SKSpriteNode(color: .black, size: Self.size)
+        black.anchorPoint = .zero
+        black.zPosition = Layer.cursor + 1
+        black.alpha = 0
+        black.run(.fadeIn(withDuration: duration))
+        scene.addChild(black)
     }
 
     func showEndCard() {

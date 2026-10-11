@@ -56,6 +56,7 @@ final class Director {
         stage.cursor.position = CGPoint(x: 980, y: 430)
 
         scene.onScore = { [unowned self] url in
+            log.play(.trash)
             stage.removeIcon(url)
             let cheer = cheers.isEmpty ? "Swish!" : cheers.removeFirst()
             stage.showToast(title: cheer, subtitle: "\(url.lastPathComponent.middleTruncated(to: 26)) → Trash", undo: true, for: 2.6)
@@ -123,7 +124,7 @@ final class Director {
 
     private func startShooting() {
         let tile = stage.trashTile
-        scene.mountBasket(home: CGPoint(x: tile.midX, y: tile.minY + tile.height * 0.1), dockTile: tile, animated: true)
+        scene.mountBasket(home: BasketNode.base(onDockTile: tile), dockTile: tile, animated: true)
         stage.setShooting(true)
         stage.showToast(title: "Shoot mode · Normal", subtitle: "Throw files into the Trash · drag the Trash to move it · esc to stop")
     }

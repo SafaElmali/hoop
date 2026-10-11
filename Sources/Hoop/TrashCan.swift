@@ -8,13 +8,38 @@ struct Shot {
 
 /// Moves scored files to the Trash and puts them back on undo.
 final class TrashCan {
+    struct Trashed {
+        /// Finder did it, so Put Back works and Finder played its own trash sound.
+        let byFinder: Bool
+        /// Whether Hoop knows where the file went, so it can undo.
+        let undoable: Bool
+    }
+
     private(set) var history: [Shot] = []
     var lastShot: Shot? { history.last }
 
-    func trash(_ url: URL) throws {
-        var trashed: NSURL?
-        try FileManager.default.trashItem(at: url, resultingItemURL: &trashed)
-        history.append(Shot(original: url, trashed: trashed as URL? ?? url))
+    /// Asks Finder first; if Finder can't (say, no permission to control it), moves the file itself.
+    /// Calls back on the main queue.
+    func trash(_ url: URL, completion: @escaping (Result<Trashed, Error>) -> Void) {
+        Finder.trash(url) { [weak self] trashed in
+            guard let self else { return }
+            if let trashed {
+                history.append(Shot(original: url, trashed: trashed))
+                return completion(.success(Trashed(byFinder: true, undoable: true)))
+            }
+            // Finder may have trashed it but not said where.
+            guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
+                return completion(.success(Trashed(byFinder: true, undoable: false)))
+            }
+            do {
+                var moved: NSURL?
+                try FileManager.default.trashItem(at: url, resultingItemURL: &moved)
+                history.append(Shot(original: url, trashed: moved as URL? ?? url))
+                completion(.success(Trashed(byFinder: false, undoable: true)))
+            } catch {
+                completion(.failure(error))
+            }
+        }
     }
 
     /// Moves the last trashed file back to where it came from and returns its restored location.

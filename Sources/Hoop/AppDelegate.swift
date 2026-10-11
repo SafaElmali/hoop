@@ -90,6 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     private func startShooting() {
         let spot = locateBasket()
         self.spot = spot
+        Log.event("shoot mode on: accessibility=\(DockTrash.isTrusted) dockTile=\(spot.dockTile.map { "\($0)" } ?? "none") home=\(spot.home) screen=\(spot.screen.frame)")
         overlay.show(on: spot.screen, home: spot.home, dockTile: spot.dockTile)
         escapeKey = HotKey(keyCode: kVK_Escape, modifiers: 0) { [unowned self] in stopShooting() }
         statusItem.button?.contentTintColor = .systemOrange
@@ -137,13 +138,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     /// The spot the player dragged the basket to, else the Trash tile in the Dock.
+    /// The Dock-sized Trash always sits in the Dock.
     private func locateBasket() -> Spot {
-        if let home = savedHome, let screen = NSScreen.screens.first(where: { $0.frame.contains(home) }) {
+        if basketSize != .dock, let home = savedHome, let screen = NSScreen.screens.first(where: { $0.frame.contains(home) }) {
             return Spot(home: home, dockTile: nil, screen: screen)
         }
         let (tile, screen) = locateTrash()
-        // The can's bottom sits where it does in the Dock icon (the artwork ends 10% above the tile's bottom).
-        return Spot(home: CGPoint(x: tile.midX, y: tile.minY + tile.height * 0.1), dockTile: tile, screen: screen)
+        return Spot(home: BasketNode.base(onDockTile: tile), dockTile: tile, screen: screen)
     }
 
     /// The Trash tile from the Dock, or a best guess (bottom-right) without Accessibility access.
@@ -162,19 +163,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private func trash(_ url: URL) {
         let name = url.lastPathComponent.middleTruncated(to: 28)
-        do {
-            try trashCan.trash(url)
-            let undo = ToastAction(title: "Undo") { [unowned self] in undoShot(nil) }
-            toast.show(ToastContent(title: CourtScene.randomCheer(), subtitle: "\(name) → Trash", action: undo), on: screen, for: 6)
-        } catch {
-            toast.show(ToastContent(title: "Couldn’t trash \(name)", subtitle: error.localizedDescription), on: screen, for: 4)
-            scene.respawn(url)
+        trashCan.trash(url) { [weak self] result in
+            guard let self else { return }
+            Log.event("trash \(url.lastPathComponent): \(result)")
+            switch result {
+            case let .success(trashed):
+                // Finder plays its own trash sound; moving the file ourselves is silent.
+                if !trashed.byFinder { sounds.play(.trash) }
+                let undo = trashed.undoable ? ToastAction(title: "Undo") { [weak self] in self?.undoShot(nil) } : nil
+                toast.show(ToastContent(title: CourtScene.randomCheer(), subtitle: "\(name) → Trash", action: undo), on: screen, for: 6)
+            case let .failure(error):
+                toast.show(ToastContent(title: "Couldn’t trash \(name)", subtitle: error.localizedDescription), on: screen, for: 4)
+                scene.respawn(url)
+            }
         }
     }
 
     /// A file came to rest outside the Trash. A desktop file's real icon moves to where it landed
     /// (kept clear of the Dock and menu bar); files from other folders stay in their folder.
     private func landed(_ url: URL, at point: CGPoint, wasThrown: Bool) {
+        Log.event("landed \(url.lastPathComponent) at \(point)")
         let onDesktop = Finder.isOnDesktop(url)
         if onDesktop {
             let area = screen.visibleFrame.insetBy(dx: 44, dy: 50)
@@ -253,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
             menuItem.state = menuItem.representedObject as? String == basketSize.rawValue ? .on : .off
             return true
         case #selector(putTrashBack(_:)):
-            return savedHome != nil
+            return savedHome != nil && basketSize != .dock
         case #selector(undoShot(_:)):
             menuItem.title = trashCan.lastShot.map { "Undo “\($0.original.lastPathComponent.middleTruncated(to: 28))”" } ?? "Undo"
             return trashCan.lastShot != nil
@@ -276,7 +284,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     @objc private func chooseSize(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String, let size = BasketSize(rawValue: raw) else { return }
+        let wasDock = basketSize == .dock
         basketSize = size
+        // Going to or from Dock Size moves the Trash between the Dock and wherever it was dragged.
+        guard isShooting, wasDock != (size == .dock) else { return }
+        let spot = locateBasket()
+        self.spot = spot
+        overlay.moveBasket(home: spot.home, dockTile: spot.dockTile, animated: true)
     }
 
     @objc private func putTrashBack(_ sender: Any?) {

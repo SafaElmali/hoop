@@ -71,8 +71,10 @@ final class OverlayWindow: NSPanel {
         if isDown, !isMouseDown {
             isMouseDown = true
             pasteboardBaseline = changeCount
+            Log.event("mouse down, drag pasteboard \(changeCount)")
         } else if !isDown, isMouseDown {
             isMouseDown = false
+            Log.event("mouse up, armed=\(isArmed)")
             // Safety net in case the drag ended somewhere we never heard about.
             if isArmed {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
@@ -81,6 +83,7 @@ final class OverlayWindow: NSPanel {
             }
         }
         if isMouseDown, !isArmed, changeCount != pasteboardBaseline {
+            Log.event("drag started (pasteboard \(pasteboardBaseline) → \(changeCount)): taking the drop")
             isArmed = true
             ignoresMouseEvents = false
         } else if !isMouseDown, !isArmed {
@@ -121,9 +124,11 @@ final class CourtView: SKView {
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         // Not files (e.g. dragged text): step aside so the drop reaches the app underneath.
         guard !fileURLs(in: sender).isEmpty else {
+            Log.event("drag entered without files: stepping aside")
             overlay?.disarm()
             return []
         }
+        Log.event("drag entered with \(fileURLs(in: sender).count) file(s)")
         samples = []
         record(sender)
         return operation(for: sender)
@@ -138,6 +143,7 @@ final class CourtView: SKView {
         record(sender)
         let urls = fileURLs(in: sender)
         guard let court, !urls.isEmpty else { return false }
+        Log.event("drop at \(scenePoint(sender)), velocity \(flickVelocity())")
         court.throwFiles(urls, at: scenePoint(sender), velocity: flickVelocity())
         return true
     }

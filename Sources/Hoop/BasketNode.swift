@@ -5,6 +5,9 @@ import SpriteKit
 /// The node's origin is the bottom of the can, so scaling it grows the can upwards.
 final class BasketNode: SKNode {
     let side: CGFloat
+    /// A solid can only lets files in through its opening. A Dock-sized one is smaller than a
+    /// thrown file, so instead it catches any file that touches it.
+    let isSolid: Bool
     /// Height of the opening above the bottom of the can.
     var rimHeight: CGFloat { y(Art.openingCenter) }
     /// Half the width of the can at its lip.
@@ -26,10 +29,19 @@ final class BasketNode: SKNode {
 
     private let back = SKSpriteNode()
     private let front = SKSpriteNode()
+    private var catchMargin: CGFloat { isSolid ? 0 : FileNode.radius * 0.8 }
 
-    init(side: CGFloat, isFull: Bool) {
+    /// Where the bottom of the can sits for the Trash in a Dock tile: the icon is the tile's top
+    /// square, and its artwork ends a little above the icon's bottom edge.
+    static func base(onDockTile tile: CGRect) -> CGPoint {
+        let icon = min(tile.width, tile.height)
+        return CGPoint(x: tile.midX, y: tile.maxY - icon * Art.bottom)
+    }
+
+    init(side: CGFloat, isFull: Bool, isSolid: Bool = true) {
         self.side = side
         self.isFull = isFull
+        self.isSolid = isSolid
         super.init()
 
         let artCenter = CGPoint(x: 0, y: side * (Art.bottom - 0.5))
@@ -43,6 +55,7 @@ final class BasketNode: SKNode {
             addChild(crop)
         }
         applyTexture()
+        guard isSolid else { return }
 
         // The lip's ends, sides and bottom are solid (it can be dragged off the floor), so the
         // opening at the top is the only way in.
@@ -64,12 +77,13 @@ final class BasketNode: SKNode {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    /// Whether a point, relative to the bottom of the can, is inside it (below the opening, between the sides).
+    /// Whether a point, relative to the bottom of the can, is inside it (below the opening, between
+    /// the sides), or for a Dock-sized can, on or right next to it.
     func isInside(_ point: CGPoint) -> Bool {
-        guard point.y > 0, point.y < rimHeight else { return false }
-        let progress = point.y / rimHeight
+        guard point.y > -catchMargin, point.y < rimHeight + catchMargin else { return false }
+        let progress = max(0, min(1, point.y / rimHeight))
         let halfWidth = side * (Art.bottomHalfWidth + (Art.lipHalfWidth - Art.bottomHalfWidth) * progress)
-        return abs(point.x) < halfWidth
+        return abs(point.x) < halfWidth + catchMargin
     }
 
     /// Whether a point, relative to the bottom of the can, is on the can (for grabbing it).

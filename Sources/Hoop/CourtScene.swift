@@ -35,16 +35,22 @@ enum Mode: String, CaseIterable {
 /// How big the Trash grows in shoot mode.
 enum BasketSize: String, CaseIterable {
     case small, medium, large, huge
+    /// The real Trash in the Dock: its size, at its spot.
+    case dock
 
-    var title: String { rawValue.capitalized }
+    var title: String { self == .dock ? "Dock Size" : rawValue.capitalized }
 
-    /// Side of the Trash artwork, in points. Even Small leaves room for a thrown file in the opening.
-    var side: CGFloat {
+    /// Grown sizes leave room for a thrown file in the opening; the Dock's Trash is too small for that.
+    var isSolid: Bool { self != .dock }
+
+    /// Side of the Trash artwork, in points.
+    func side(dockTile: CGRect?) -> CGFloat {
         switch self {
         case .small: 110
         case .medium: 150
         case .large: 210
         case .huge: 300
+        case .dock: dockTile.map { min($0.width, $0.height) } ?? 64
         }
     }
 }
@@ -125,7 +131,7 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     func mountBasket(home: CGPoint, dockTile: CGRect?, animated: Bool) {
         self.home = home
         self.dockTile = dockTile
-        let basket = self.basket ?? makeBasket()
+        let basket = currentBasket()
         if let isFull = Self.trashHasItems() { basket.isFull = isFull }
         basket.removeAllActions()
         basket.position = home
@@ -138,8 +144,9 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         basket.run(grow)
     }
 
+    /// The Dock-sized Trash stays in the Dock, so only grown ones can be grabbed.
     func isOverBasket(_ point: CGPoint) -> Bool {
-        guard let basket else { return false }
+        guard let basket, basketSize != .dock else { return false }
         return basket.covers(offset(of: point, from: basket))
     }
 
@@ -196,7 +203,7 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
 
     override func mouseDown(with event: NSEvent) {
         let point = event.location(in: self)
-        guard let basket, basket.covers(offset(of: point, from: basket)) else { return }
+        guard isOverBasket(point), let basket else { return }
         basket.removeAction(forKey: ActionKey.dash)
         basket.removeAction(forKey: ActionKey.home)
         grabOffset = CGVector(dx: basket.position.x - point.x, dy: basket.position.y - point.y)
@@ -267,17 +274,17 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
         file.isLeaving = true
         file.physicsBody = nil
         file.zPosition = Z.fileInside
-        sounds.play(.trash)
+        // Trash it right away, so Finder's sound lands with the file.
+        onScore?(file.url)
 
         let target = CGPoint(x: basket.position.x, y: basket.position.y + basket.rimHeight * 0.45)
         let drop = SKAction.move(to: target, duration: 0.26)
         drop.timingMode = .easeIn
         let fade = SKAction.sequence([.wait(forDuration: 0.14), .fadeOut(withDuration: 0.12)])
-        file.run(.group([drop, .scale(to: 0.55, duration: 0.26), fade])) { [weak self, weak basket] in
+        file.run(.group([drop, .scale(to: basket.isSolid ? 0.55 : 0.3, duration: 0.26), fade])) { [weak basket] in
             file.removeFromParent()
             basket?.bump()
             basket?.isFull = true
-            self?.onScore?(file.url)
         }
     }
 
@@ -359,8 +366,15 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
 
     // MARK: Helpers
 
-    private func makeBasket() -> BasketNode {
-        let basket = BasketNode(side: basketSize.side, isFull: Self.trashHasItems() ?? false)
+    /// The Trash at the current size, made or remade as needed.
+    private func currentBasket() -> BasketNode {
+        if let basket, basket.side == basketSize.side(dockTile: dockTile), basket.isSolid == basketSize.isSolid {
+            return basket
+        }
+        let old = basket
+        let basket = BasketNode(side: basketSize.side(dockTile: dockTile), isFull: old?.isFull ?? Self.trashHasItems() ?? false, isSolid: basketSize.isSolid)
+        basket.position = old?.position ?? home
+        old?.removeFromParent()
         addChild(basket)
         self.basket = basket
         return basket
@@ -369,11 +383,8 @@ final class CourtScene: SKScene, SKPhysicsContactDelegate {
     /// Swaps in a Trash of the new size where the old one stood, with a little pop.
     private func resizeBasket() {
         guard let old = basket else { return }
-        let resized = BasketNode(side: basketSize.side, isFull: old.isFull)
-        resized.position = old.position
-        old.removeFromParent()
-        addChild(resized)
-        basket = resized
+        let resized = currentBasket()
+        guard resized !== old else { return }
         resized.setScale(old.side / resized.side)
         let pop = SKAction.scale(to: 1, duration: 0.25)
         pop.timingMode = .easeOut

@@ -1,4 +1,14 @@
 import AppKit
+import os
+
+/// Key steps of a throw, readable with `log stream --predicate 'subsystem == "com.safa.hoop"'`.
+enum Log {
+    private static let logger = Logger(subsystem: "com.safa.hoop", category: "game")
+
+    static func event(_ message: String) {
+        logger.notice("\(message, privacy: .public)")
+    }
+}
 
 enum Palette {
     static let rim = NSColor(hex: 0x4A5AEF)

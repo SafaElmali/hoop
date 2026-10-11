@@ -25,6 +25,20 @@ extension NSColor {
     }
 }
 
+extension NSScreen {
+    /// The screen under the pointer.
+    static var underPointer: NSScreen {
+        let pointer = NSEvent.mouseLocation
+        return screens.first { NSMouseInRect(pointer, $0.frame, false) } ?? main ?? screens[0]
+    }
+
+    /// Identifies a display; compare these rather than `NSScreen` objects, which can be replaced
+    /// when displays are added, removed or rearranged.
+    var displayID: CGDirectDisplayID? {
+        deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID
+    }
+}
+
 extension NSAttributedString {
     /// System-font text for `SKLabelNode.attributedText` (font names like ".SFNS" don't work with `fontName`).
     static func label(_ string: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor) -> NSAttributedString {

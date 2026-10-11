@@ -11,6 +11,9 @@ final class HotKey {
     private let id: UInt32
     private var ref: EventHotKeyRef?
 
+    /// False when macOS refused the shortcut, say because something else already has it.
+    var isRegistered: Bool { ref != nil }
+
     init(keyCode: Int, modifiers: Int, action: @escaping () -> Void) {
         Self.installHandler()
         id = Self.nextID

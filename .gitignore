@@ -3,3 +3,4 @@ build/
 .swiftpm/
 .DS_Store
 media/*.mp4
+.claude/

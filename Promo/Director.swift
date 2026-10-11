@@ -63,7 +63,7 @@ final class Director {
         for (url, point) in layout { stage.place(url, at: point) }
         stage.cursor.position = CGPoint(x: 980, y: 430)
 
-        scene.onScore = { [unowned self] url in
+        scene.onScore = { [unowned self] url, _ in
             log.play(.trash)
             stage.removeIcon(url)
             let cheer = cheers.isEmpty ? "Swish!" : cheers.removeFirst()

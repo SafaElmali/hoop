@@ -12,12 +12,14 @@ A tiny macOS menu bar app that turns your Trash into a basketball hoop. Drag a f
 - Drag any file and let go mid-swing. In the can → Finder moves it to the Trash, just like dropping it on the Dock's Trash (so **Put Back** works), with **Undo** in the toast and the 🏀 menu.
 - Miss → the file stays put. A desktop file's icon moves to where it landed.
 - Drop a file straight onto the Trash for a dunk.
+- Long shots, clean swishes and dunks get their own callouts. Three in a row and you're on fire: thrown files trail flames until you miss.
 - Drag the Trash itself to put it anywhere; 🏀 → **Put Trash Back on Dock** resets it.
 
 ## Options (🏀 menu)
 
 - **Mode**: Normal · Moving (the Trash glides back and forth) · Impossible (it dodges every shot)
 - **Trash Size**: Small · Medium · Large · Huge · Dock Size (the real Trash in your Dock: its size, its spot)
+- **Stats**: makes, misses, best streak and how much you've trashed
 - **Sound Effects**: whooshes, can clanks and landings; a make plays Finder's own trash sound
 
 ## Install

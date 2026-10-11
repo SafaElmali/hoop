@@ -35,11 +35,13 @@ final class Stage {
     private var caption: SKNode?
     private var toast: SKNode?
     private var restingToast: (title: String, subtitle: String)?
+    private var isShowingResting = false
     private var menu: SKNode?
     private var menuRows: [SKShapeNode] = []
     private var dragImage: SKNode?
 
     var basket: BasketNode? { scene.children.first { $0 is BasketNode } as? BasketNode }
+    var hoop: HoopNode? { scene.children.first { $0 is HoopNode } as? HoopNode }
 
     init(scene: CourtScene) {
         self.scene = scene
@@ -171,6 +173,7 @@ final class Stage {
         pill.zPosition = Layer.toast
         scene.addChild(pill)
         toast = pill
+        isShowingResting = duration == nil
         if let duration {
             pill.run(.sequence([.wait(forDuration: duration), .run { [weak self] in
                 guard let self else { return }
@@ -184,6 +187,13 @@ final class Stage {
         } else {
             restingToast = (title, subtitle)
         }
+    }
+
+    /// Changes the resting message (like the Shot Clock's countdown) without cutting short a toast
+    /// that's showing on top of it.
+    func updateRestingToast(title: String, subtitle: String) {
+        restingToast = (title, subtitle)
+        if isShowingResting { showToast(title: title, subtitle: subtitle) }
     }
 
     func hideToast() {

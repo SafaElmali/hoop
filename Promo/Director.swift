@@ -4,12 +4,23 @@ import SpriteKit
 /// Plays a scripted session of Hoop on the fake desktop, driving the real game scene,
 /// and renders it to an MP4 with sound.
 final class Director {
-    /// `funny` has meme captions and an end card; `gameplay` looks like a plain screen recording, with music.
+    /// `funny` has meme captions and an end card; `gameplay` looks like a plain screen recording, with
+    /// music; `features` is the same style showing streaks, the backboard, the folder hoop and Shot Clock.
     enum Cut {
-        case funny, gameplay
+        case funny, gameplay, features
 
-        var duration: TimeInterval { self == .funny ? 37 : 44 }
+        var duration: TimeInterval {
+            switch self {
+            case .funny: 37
+            case .gameplay: 44
+            case .features: 43
+            }
+        }
     }
+
+    /// The 🏀 menu as the app shows it.
+    private static let hoopMenu = ["Shoot Mode", "Shot Clock", "Mode", "Trash Size", "Backboard", "Folder Hoop",
+                                   "Put Trash Back on Dock", "Undo", "Stats", "Sounds", "Shortcut…", "Open at Login", "Quit Hoop"]
 
     static let fps = 60.0
     static let pixelSize = (width: 1920, height: 1080)
@@ -21,6 +32,10 @@ final class Director {
         case leftLip
         /// Where a Moving-mode Trash will be when the file comes down.
         case lead
+        /// Off the inside of the backboard, to drop back into the can.
+        case bank
+        /// Through the folder hoop.
+        case hoop
     }
 
     /// The cursor holds an icon a little left of and above its centre.
@@ -43,6 +58,11 @@ final class Director {
     private var now: TimeInterval = 0
     private var lastBasketX: CGFloat?
     private var basketMovingLeft = false
+    /// The real callouts, for the features cut.
+    private var scorekeeper: Scorekeeper?
+    private var clock: ShotClock?
+    /// While a paper ball is held it follows the cursor, one drag sample per frame.
+    private var isHoldingBall = false
 
     init(cut: Cut) throws {
         self.cut = cut
@@ -63,19 +83,31 @@ final class Director {
         for (url, point) in layout { stage.place(url, at: point) }
         stage.cursor.position = CGPoint(x: 980, y: 430)
 
-        scene.onScore = { [unowned self] url, _ in
-            log.play(.trash)
+        scene.onScore = { [unowned self] url, make in
+            var destination = "Trash"
+            if case let .folder(folder) = make.target {
+                destination = folder.lastPathComponent
+            } else {
+                log.play(.trash)
+            }
             stage.removeIcon(url)
-            let cheer = cheers.isEmpty ? "Swish!" : cheers.removeFirst()
-            stage.showToast(title: cheer, subtitle: "\(url.lastPathComponent.middleTruncated(to: 26)) → Trash", undo: true, for: 2.6)
-            print(String(format: "%6.2fs  in the Trash   %@", now, url.lastPathComponent))
+            let callout = scorekeeper?.recordMake(make, bytes: 0)
+            scene.isOnFire = scorekeeper?.isOnFire ?? false
+            let title = callout?.title ?? (cheers.isEmpty ? "Swish!" : cheers.removeFirst())
+            let subtitle = ["\(url.lastPathComponent.middleTruncated(to: 26)) → \(destination)", callout?.note].compactMap { $0 }.joined(separator: " · ")
+            stage.showToast(title: title, subtitle: subtitle, undo: true, for: 2.6)
+            print(String(format: "%6.2fs  in → %@  %@  %@", now, destination, url.lastPathComponent, callout?.title ?? ""))
             reactions.removeValue(forKey: url)?.score()
         }
         scene.onLand = { [unowned self] url, point, wasThrown in
             stage.moveIcon(url, to: point)
             print(String(format: "%6.2fs  landed         %@", now, url.lastPathComponent))
             guard wasThrown else { return }
-            if scene.mode == .impossible {
+            let callout = scorekeeper?.recordMiss()
+            scene.isOnFire = scorekeeper?.isOnFire ?? false
+            if let callout {
+                stage.showToast(title: callout.title, subtitle: "\(url.lastPathComponent.middleTruncated(to: 26)) stays where it landed", for: 2.2)
+            } else if scene.mode == .impossible {
                 let denial = denials.isEmpty ? "Denied!" : denials.removeFirst()
                 stage.showToast(title: denial, subtitle: "Impossible mode never lets one in", for: 2.2)
             } else {
@@ -86,6 +118,7 @@ final class Director {
         switch cut {
         case .funny: writeFunnyScript()
         case .gameplay: writeGameplayScript()
+        case .features: writeFeaturesScript()
         }
     }
 
@@ -138,8 +171,7 @@ final class Director {
     /// ending on the real Dock-sized Trash.
     private func writeGameplayScript() {
         let clutterScreenshot = files.clutter[2], logo = files.clutter[5]
-        pickMenu(at: 0.8, title: "Hoop", items: ["Shoot Mode", "Mode", "Trash Size", "Put Trash Back on Dock", "Undo", "Sound Effects", "Quit Hoop"],
-                 selected: -1, choice: 0) { self.startShooting() }
+        pickMenu(at: 0.8, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 0) { self.startShooting() }
 
         throwFile(files.screenshot, at: 3.2, release: { _ in CGPoint(x: 560, y: 470) }, flight: 1.25, aim: .center)
         throwFile(files.psd, at: 6.2, release: { _ in CGPoint(x: 380, y: 430) }, flight: 1.2, aim: .leftLip)
@@ -168,6 +200,114 @@ final class Director {
         beat(42.4) {
             self.stage.hideToast()
             self.stage.fadeToBlack(duration: 1.2)
+        }
+    }
+
+    /// No captions: a streak that catches fire and goes out, a bank shot off the backboard, a make
+    /// into the folder hoop, then a Shot Clock round with paper balls.
+    private func writeFeaturesScript() {
+        let scorekeeper = Scorekeeper()
+        scorekeeper.reset()
+        self.scorekeeper = scorekeeper
+        UserDefaults.standard.removeObject(forKey: "shotClockBest")
+        scene.onPracticeScore = { [unowned self] make in practiceMade(make) }
+        scene.onPracticeMiss = { [unowned self] in practiceMissed() }
+        let downloads = FileManager.default.temporaryDirectory.appending(path: "hoop-promo-folders/Downloads", directoryHint: .isDirectory)
+        try? FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        let todo = files.clutter[4], screenshot3 = files.clutter[3]
+
+        pickMenu(at: 0.8, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 0) { self.startShooting() }
+        throwFile(files.screenshot, at: 3.2, release: { _ in CGPoint(x: 560, y: 470) }, flight: 1.25, aim: .center)
+        throwFile(files.resume, at: 6.0, release: { _ in CGPoint(x: 760, y: 640) }, flight: 1.15, aim: .center)
+        throwFile(files.photo, at: 8.8, release: { _ in CGPoint(x: 300, y: 430) }, flight: 1.4, aim: .center)
+        throwFile(files.taxes, at: 11.8, release: { _ in CGPoint(x: 430, y: 640) }, flight: 1.25, aim: .center)
+        throwFile(files.psd, at: 14.6, release: { _ in CGPoint(x: 380, y: 430) }, flight: 1.2, aim: .leftLip)
+
+        pickMenu(at: 16.2, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 4) { self.scene.hasBackboard = true }
+        throwFile(screenshot3, at: 18.4, release: { _ in CGPoint(x: 950, y: 520) }, flight: 1.0, aim: .bank)
+
+        pickMenu(at: 21.0, title: "Folder Hoop", items: ["Off", "Downloads", "Desktop", "Documents", "Choose Folder…"], selected: 0, choice: 1) {
+            self.scene.mountHoop(folder: downloads, rimCenter: CGPoint(x: Stage.size.width * 0.2, y: 305), animated: true)
+        }
+        throwFile(todo, at: 22.8, release: { _ in CGPoint(x: 900, y: 600) }, flight: 1.2, aim: .hoop)
+
+        let roundStart = 25.6 + 1.35
+        pickMenu(at: 25.6, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 1) { self.startShotClock(seconds: 12) }
+        for second in 1...12 { beat(roundStart + Double(second)) { self.clock?.tick() } }
+        throwBall(at: 27.3, release: CGPoint(x: 380, y: 470), flight: 1.25, aim: .center)
+        throwBall(at: 29.4, release: CGPoint(x: 360, y: 480), flight: 1.25, aim: .center)
+        throwBall(at: 31.5, release: CGPoint(x: 230, y: 420), flight: 0.9, aim: .hoop)
+        throwBall(at: 33.6, release: CGPoint(x: 380, y: 470), flight: 1.25, aim: .leftLip)
+        throwBall(at: 35.7, release: CGPoint(x: 380, y: 470), flight: 1.25, aim: .center)
+
+        beat(41.6) {
+            self.stage.hideToast()
+            self.stage.fadeToBlack(duration: 1.2)
+        }
+    }
+
+    private func startShotClock(seconds: Int) {
+        let clock = ShotClock(seconds: seconds) { [unowned self] clock in clockTicked(clock) }
+        self.clock = clock
+        log.play(.whistle)
+        // Like the app: the rack stands at the bottom, on the side away from the Trash.
+        scene.mountRack(center: CGPoint(x: 150, y: 96))
+        stage.showToast(title: clock.hud.title, subtitle: clock.hud.subtitle)
+    }
+
+    /// Mirrors the app: the last five seconds tick; at zero the buzzer, the balls cleared, the result.
+    private func clockTicked(_ clock: ShotClock) {
+        guard clock.isOver else {
+            if clock.secondsLeft <= 5 { log.play(.tick) }
+            return stage.updateRestingToast(title: clock.hud.title, subtitle: clock.hud.subtitle)
+        }
+        log.play(.buzzer)
+        self.clock = nil
+        scene.clearPractice()
+        stage.showToast(title: "Shoot mode · Normal", subtitle: "Throw files into the Trash · drag the Trash to move it · esc to stop")
+        stage.showToast(title: clock.result.title, subtitle: clock.result.subtitle, for: 4)
+    }
+
+    private func practiceMade(_ make: MakeInfo) {
+        guard let scorekeeper, let clock else { return }
+        let callout = scorekeeper.recordMake(make, bytes: 0, isPractice: true)
+        scene.isOnFire = scorekeeper.isOnFire
+        clock.recordMake()
+        if make.target == .trash { log.play(.trash) }
+        stage.showToast(title: callout.title, subtitle: ["\(clock.made) made", callout.note].compactMap { $0 }.joined(separator: " · "), for: 2)
+        stage.updateRestingToast(title: clock.hud.title, subtitle: clock.hud.subtitle)
+        print(String(format: "%6.2fs  paper ball in  %@", now, callout.title))
+    }
+
+    private func practiceMissed() {
+        guard let scorekeeper, let clock else { return }
+        let callout = scorekeeper.recordMiss(isPractice: true)
+        scene.isOnFire = scorekeeper.isOnFire
+        if let callout { stage.showToast(title: callout.title, subtitle: "\(clock.made) made", for: 2) }
+        print(String(format: "%6.2fs  paper ball missed", now))
+    }
+
+    /// Grab a paper ball off the rack, wind up and flick it through `release` so it lands on `aim`.
+    private func throwBall(at start: TimeInterval, release: CGPoint, flight: CGFloat, aim: Aim) {
+        var velocity = CGVector.zero
+        var ball = CGPoint.zero
+        beat(start) {
+            guard let position = self.scene.rackedBallPositions.first else { return }
+            ball = position
+            self.moveCursor(to: position, duration: 0.4)
+        }
+        beat(start + 0.45) {
+            guard self.scene.pickUpBall(at: ball, time: self.now) else { return }
+            self.log.click()
+            self.isHoldingBall = true
+            velocity = self.velocity(from: release, flight: flight, aim: aim, releasingIn: 0.55)
+            self.moveCursor(to: CGPoint(x: release.x - velocity.dx * 0.1, y: release.y - velocity.dy * 0.1), duration: 0.4)
+        }
+        beat(start + 0.9) { self.moveCursor(to: release, duration: 0.1, timing: .linear) }
+        beat(start + 1.0) {
+            guard self.isHoldingBall else { return }
+            self.isHoldingBall = false
+            self.scene.releaseBall(at: self.stage.cursor.position, time: self.now)
         }
     }
 
@@ -293,9 +433,21 @@ final class Director {
         case .center: CGPoint(x: basket.position.x, y: rimY + 10)
         case .leftLip: CGPoint(x: basket.position.x - basket.outerHalfWidth + 2, y: rimY + 14)
         case .lead: CGPoint(x: predictedBasketX(after: delay + Double(flight), basket: basket), y: rimY + 10)
+        case .bank: bankTarget(on: basket)
+        case .hoop: stage.hoop.map { CGPoint(x: $0.position.x, y: $0.position.y + 10) } ?? CGPoint(x: basket.position.x, y: rimY + 10)
         }
         return Self.launch(from: point, to: target, flight: flight)
     }
+
+    /// A point on the inside face of the backboard, a little above the lip, for a file to bounce off.
+    private func bankTarget(on basket: BasketNode) -> CGPoint {
+        let side: CGFloat = basket.isBackboardOnRight ? 1 : -1
+        let face = basket.reach - basket.side * 0.16
+        return CGPoint(x: basket.position.x + side * (face - Throwable.radius + 2), y: basket.position.y + basket.rimHeight + Self.bankHeight)
+    }
+
+    /// How far above the opening a bank shot meets the board.
+    private static let bankHeight: CGFloat = 70
 
     /// The velocity that carries a damped projectile from `start` to `target` in `flight` seconds.
     private static func launch(from start: CGPoint, to target: CGPoint, flight: CGFloat) -> CGVector {
@@ -338,6 +490,7 @@ final class Director {
                 beats.removeFirst()
                 next.run()
             }
+            if isHoldingBall { scene.dragBall(to: stage.cursor.position, time: now) }
             renderer.render(at: now, readBack: encoder != nil)
             trackBasket()
             if let encoder {
@@ -351,7 +504,7 @@ final class Director {
         try encoder.pipe.fileHandleForWriting.close()
         encoder.process.waitUntilExit()
         let soundtrack = FileManager.default.temporaryDirectory.appending(path: "hoop-promo-sound.wav")
-        try log.writeSoundtrack(to: soundtrack, duration: cut.duration, music: cut == .gameplay ? Music.render(duration: cut.duration) : nil)
+        try log.writeSoundtrack(to: soundtrack, duration: cut.duration, music: cut == .funny ? nil : Music.render(duration: cut.duration))
         try FFmpeg.run([
             "-i", silent.path, "-i", soundtrack.path, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
             "-shortest", "-movflags", "+faststart", output.path,

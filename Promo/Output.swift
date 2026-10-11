@@ -11,12 +11,15 @@ final class FrameRenderer {
     private let queue: MTLCommandQueue
     private let texture: MTLTexture
     private let pass = MTLRenderPassDescriptor()
+    private let scene: SKScene
+    private var lastTime: TimeInterval?
 
     init(scene: SKScene, width: Int, height: Int) {
         let device = MTLCreateSystemDefaultDevice()!
         self.width = width
         self.height = height
         pixels = [UInt8](repeating: 0, count: width * height * 4)
+        self.scene = scene
         renderer = SKRenderer(device: device)
         renderer.scene = scene
         renderer.ignoresSiblingOrder = true
@@ -36,6 +39,9 @@ final class FrameRenderer {
     func render(at time: TimeInterval, readBack: Bool = true) {
         // SKRenderer ignores a clock that starts at zero, so run it from an arbitrary later point.
         renderer.update(atTime: 1_000 + time)
+        // SKRenderer doesn't run particle emitters (an SKView does), so step them along with the clock.
+        if let lastTime { Self.emitters(in: scene).forEach { $0.advanceSimulationTime(time - lastTime) } }
+        lastTime = time
         let commands = queue.makeCommandBuffer()!
         renderer.render(withViewport: CGRect(x: 0, y: 0, width: width, height: height), commandBuffer: commands, renderPassDescriptor: pass)
         commands.commit()
@@ -43,6 +49,10 @@ final class FrameRenderer {
         if readBack {
             texture.getBytes(&pixels, bytesPerRow: width * 4, from: MTLRegionMake2D(0, 0, width, height), mipmapLevel: 0)
         }
+    }
+
+    private static func emitters(in node: SKNode) -> [SKEmitterNode] {
+        node.children.flatMap { child in (child as? SKEmitterNode).map { [$0] } ?? [] + emitters(in: child) }
     }
 
     func image() -> CGImage {

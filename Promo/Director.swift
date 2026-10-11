@@ -13,7 +13,7 @@ final class Director {
             switch self {
             case .funny: 37
             case .gameplay: 44
-            case .features: 43
+            case .features: 37
             }
         }
     }
@@ -95,6 +95,7 @@ final class Director {
             scene.isOnFire = scorekeeper?.isOnFire ?? false
             let title = callout?.title ?? (cheers.isEmpty ? "Swish!" : cheers.removeFirst())
             let subtitle = ["\(url.lastPathComponent.middleTruncated(to: 26)) → \(destination)", callout?.note].compactMap { $0 }.joined(separator: " · ")
+            log.play(.make)
             stage.showToast(title: title, subtitle: subtitle, undo: true, for: 2.6)
             print(String(format: "%6.2fs  in → %@  %@  %@", now, destination, url.lastPathComponent, callout?.title ?? ""))
             reactions.removeValue(forKey: url)?.score()
@@ -203,11 +204,13 @@ final class Director {
         }
     }
 
-    /// No captions: a streak that catches fire and goes out, a bank shot off the backboard, a make
-    /// into the folder hoop, then a Shot Clock round with paper balls.
+    /// Only what's new: already in shoot mode two makes into a streak, it catches fire and burns
+    /// out, the Arcade sound pack, a bank shot off the backboard, the folder hoop, a Shot Clock round
+    /// with paper balls, and Stats.
     private func writeFeaturesScript() {
         let scorekeeper = Scorekeeper()
         scorekeeper.reset()
+        for _ in 0..<2 { _ = scorekeeper.recordMake(MakeInfo(target: .trash, distance: 400, isClean: false, isDunk: false, isBank: false), bytes: 180_000) }
         self.scorekeeper = scorekeeper
         UserDefaults.standard.removeObject(forKey: "shotClockBest")
         scene.onPracticeScore = { [unowned self] make in practiceMade(make) }
@@ -216,31 +219,42 @@ final class Director {
         try? FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
         let todo = files.clutter[4], screenshot3 = files.clutter[3]
 
-        pickMenu(at: 0.8, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 0) { self.startShooting() }
-        throwFile(files.screenshot, at: 3.2, release: { _ in CGPoint(x: 560, y: 470) }, flight: 1.25, aim: .center)
-        throwFile(files.resume, at: 6.0, release: { _ in CGPoint(x: 760, y: 640) }, flight: 1.15, aim: .center)
-        throwFile(files.photo, at: 8.8, release: { _ in CGPoint(x: 300, y: 430) }, flight: 1.4, aim: .center)
-        throwFile(files.taxes, at: 11.8, release: { _ in CGPoint(x: 430, y: 640) }, flight: 1.25, aim: .center)
-        throwFile(files.psd, at: 14.6, release: { _ in CGPoint(x: 380, y: 430) }, flight: 1.2, aim: .leftLip)
+        beat(0) {
+            let tile = self.stage.trashTile
+            self.scene.mountBasket(home: BasketNode.base(onDockTile: tile), dockTile: tile, animated: false)
+            self.stage.setShooting(true)
+            self.stage.showToast(title: "Shoot mode · Normal", subtitle: "Throw files into the Trash · drag the Trash to move it · esc to stop")
+        }
+        throwFile(files.photo, at: 0.4, release: { _ in CGPoint(x: 300, y: 430) }, flight: 1.4, aim: .center)
+        throwFile(files.taxes, at: 3.2, release: { _ in CGPoint(x: 430, y: 640) }, flight: 1.25, aim: .center)
+        throwFile(files.psd, at: 6.0, release: { _ in CGPoint(x: 380, y: 430) }, flight: 1.2, aim: .leftLip)
 
-        pickMenu(at: 16.2, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 4) { self.scene.hasBackboard = true }
-        throwFile(screenshot3, at: 18.4, release: { _ in CGPoint(x: 950, y: 520) }, flight: 1.0, aim: .bank)
+        pickMenu(at: 8.4, title: "Sounds", items: SoundPack.allCases.map(\.title), selected: 0, choice: 1) { self.log.pack = .arcade }
+        pickMenu(at: 10.2, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 4) { self.scene.hasBackboard = true }
+        throwFile(screenshot3, at: 12.0, release: { _ in CGPoint(x: 950, y: 520) }, flight: 1.0, aim: .bank)
 
-        pickMenu(at: 21.0, title: "Folder Hoop", items: ["Off", "Downloads", "Desktop", "Documents", "Choose Folder…"], selected: 0, choice: 1) {
+        pickMenu(at: 14.6, title: "Folder Hoop", items: ["Off", "Downloads", "Desktop", "Documents", "Choose Folder…"], selected: 0, choice: 1) {
             self.scene.mountHoop(folder: downloads, rimCenter: CGPoint(x: Stage.size.width * 0.2, y: 305), animated: true)
         }
-        throwFile(todo, at: 22.8, release: { _ in CGPoint(x: 900, y: 600) }, flight: 1.2, aim: .hoop)
+        throwFile(todo, at: 16.4, release: { _ in CGPoint(x: 900, y: 600) }, flight: 1.2, aim: .hoop)
 
-        let roundStart = 25.6 + 1.35
-        pickMenu(at: 25.6, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 1) { self.startShotClock(seconds: 12) }
-        for second in 1...12 { beat(roundStart + Double(second)) { self.clock?.tick() } }
-        throwBall(at: 27.3, release: CGPoint(x: 380, y: 470), flight: 1.25, aim: .center)
-        throwBall(at: 29.4, release: CGPoint(x: 360, y: 480), flight: 1.25, aim: .center)
-        throwBall(at: 31.5, release: CGPoint(x: 230, y: 420), flight: 0.9, aim: .hoop)
-        throwBall(at: 33.6, release: CGPoint(x: 380, y: 470), flight: 1.25, aim: .leftLip)
-        throwBall(at: 35.7, release: CGPoint(x: 380, y: 470), flight: 1.25, aim: .center)
+        let roundStart = 19.2 + 1.35
+        pickMenu(at: 19.2, title: "Hoop", items: Self.hoopMenu, selected: -1, choice: 1) { self.startShotClock(seconds: 10) }
+        for second in 1...10 { beat(roundStart + Double(second)) { self.clock?.tick() } }
+        throwBall(at: 20.9, release: CGPoint(x: 380, y: 470), flight: 1.25, aim: .center)
+        throwBall(at: 22.9, release: CGPoint(x: 230, y: 420), flight: 0.9, aim: .hoop)
+        throwBall(at: 24.9, release: CGPoint(x: 360, y: 480), flight: 1.25, aim: .center)
+        throwBall(at: 26.9, release: CGPoint(x: 380, y: 470), flight: 1.25, aim: .center)
 
-        beat(41.6) {
+        beat(32.6) {
+            let made = scorekeeper.makes, missed = scorekeeper.misses
+            let rate = made + missed > 0 ? " · \(made * 100 / (made + missed))%" : ""
+            let trashed = ByteCountFormatter.string(fromByteCount: Int64(scorekeeper.bytesTrashed), countStyle: .file)
+            self.stage.showMenu(title: "Stats", items: ["Makes \(made) · Misses \(missed)\(rate)", "Best streak \(scorekeeper.bestStreak)", "Trashed \(trashed)", "Reset Stats"], selected: -1)
+            self.moveCursor(to: CGPoint(x: self.stage.statusIconPosition.x + 40, y: self.stage.statusIconPosition.y - 60), duration: 0.5)
+        }
+        beat(35.0) {
+            self.stage.hideMenu()
             self.stage.hideToast()
             self.stage.fadeToBlack(duration: 1.2)
         }
@@ -274,6 +288,7 @@ final class Director {
         scene.isOnFire = scorekeeper.isOnFire
         clock.recordMake()
         if make.target == .trash { log.play(.trash) }
+        log.play(.make)
         stage.showToast(title: callout.title, subtitle: ["\(clock.made) made", callout.note].compactMap { $0 }.joined(separator: " · "), for: 2)
         stage.updateRestingToast(title: clock.hud.title, subtitle: clock.hud.subtitle)
         print(String(format: "%6.2fs  paper ball in  %@", now, callout.title))

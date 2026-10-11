@@ -90,14 +90,16 @@ final class SoundLog: SoundEffects {
     }
 
     var now: TimeInterval = 0
-    private(set) var events: [(sound: Sound, volume: Float, time: TimeInterval)] = []
+    /// The sound pack in use; each sound keeps the one it was played with.
+    var pack = SoundPack.classic
+    private(set) var events: [(sound: Sound, volume: Float, time: TimeInterval, pack: SoundPack)] = []
 
     func play(_ effect: Sounds.Effect, volume: Float) {
-        events.append((.game(effect), volume, now))
+        events.append((.game(effect), volume, now, pack))
     }
 
     func click() {
-        events.append((.click, 1, now))
+        events.append((.click, 1, now, pack))
     }
 
     /// Mixes every event, over optional background `music`, into a stereo WAV of `duration` seconds.
@@ -124,7 +126,7 @@ final class SoundLog: SoundEffects {
                 channels = [click]
                 gain = 0.35
             case let .game(effect):
-                guard let buffer = sounds.samples(for: effect), let data = buffer.floatChannelData else { continue }
+                guard let buffer = sounds.samples(for: effect, in: event.pack), let data = buffer.floatChannelData else { continue }
                 let length = Int(buffer.frameLength)
                 channels = (0..<Int(buffer.format.channelCount)).map { Array(UnsafeBufferPointer(start: data[$0], count: length)) }
                 gain = Self.gain[effect] ?? 0.7
